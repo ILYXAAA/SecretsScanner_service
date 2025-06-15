@@ -1,0 +1,7 @@
+#
+# regexes-based rules to find any secrets
+#
+- id: privateKey.key
+  message: Private key
+  pattern: "\\s*-----\\s*BEGIN[ A-Z0-9_-]*PRIVATE KEY[ A-Z0-9_-]*\\s*-----"
+  severity: HIGH

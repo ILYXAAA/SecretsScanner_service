@@ -3,8 +3,17 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+Model/secret_detector_model.pkl
+Model/vectorizer.pkl
+tmp/
+Settings/login.dat
+Settings/password.dat
+Settings/pat_token.dat
+
 # C extensions
 *.so
+Datasets/Dataset_NonSecrets.txt
+Datasets/Dataset_Secrets.txt
 
 # Distribution / packaging
 .Python
