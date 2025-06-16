@@ -218,7 +218,7 @@ async def check_ref_and_resolve_azure(repo_url: str, ref_type: str, ref: str):
             else:
                 raise ValueError(f"❌ Неверный тип ref: {ref_type}")
 
-            response = requests.get(url, auth=auth, verify=False)
+            response = requests.get(url, auth=auth, verify=False, timeout=20)
             if response.status_code not in [200, 201, 202, 203]:
                 if response.status_code in [401, 403]:
                     message = f"Access Denied: [{response.status_code}]. Проверьте, что у PAT-токена/NTLM Auth есть доступ к репозиторию."
