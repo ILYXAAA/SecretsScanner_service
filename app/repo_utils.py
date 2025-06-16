@@ -54,7 +54,7 @@ def get_auth(auth_method):
 def parse_azure_devops_url(repo_url):
     parsed = urlparse(repo_url)
     server = parsed.netloc
-    path_parts = parsed.path.strip('/').split('/')
+    path_parts = parsed.path.strip("/").split("/")
 
     if '_git' not in path_parts:
         raise ValueError("❌ URL не содержит '_git'")
@@ -66,16 +66,13 @@ def parse_azure_devops_url(repo_url):
 
     repository = path_parts[git_index + 1]
 
-    if git_index >= 2:
-        # Стандартная структура: /Collection/Project/_git/Repo
-        collection = path_parts[0]
-        project = path_parts[git_index - 1]
-    elif git_index == 1:
-        # Укороченная структура: /Collection/_git/Repo → проект = репозиторий
-        collection = path_parts[0]
-        project = repository
-    else:
-        raise ValueError("❌ Невозможно определить коллекцию и проект из URL")
+    # Все части до _git — это путь: /Collection/.../Project
+    if git_index < 1:
+        raise ValueError("❌ Недостаточно информации до '_git'")
+
+    project = path_parts[git_index - 1]
+    collection_parts = path_parts[:git_index - 1]
+    collection = "/".join(collection_parts)
 
     return server, collection, project, repository
 
