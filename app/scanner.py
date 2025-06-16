@@ -102,21 +102,22 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=200, max_line_
                 print(f"🛑 Прервано сканирование {file_path} - найдено более {max_secrets} секретов")
                 break
             
+            # Проверяем длину текущей строки
+            if len(line) > max_line_length:
+                results.append({
+                    "path": file_path.replace(target_dir, "").replace("\\", "/"),
+                    "line": line_num,
+                    "secret": f"СТРОКА НЕ СКАНИРОВАЛАСЬ т.к. её длина более {max_line_length} символов. Проверьте строку вручную",
+                    "context": f"Строка {line_num} содержит большое количество символов. Длина более {max_line_length}.",
+                    "severity": "Potential",
+                    "Type": "Too Long Line"
+                })
+                continue  # Пропускаем длинную строку
+            
             # Сканируем строку на предмет секретов
             for rule in rules:
                 match = re.search(rule["pattern"], line)
                 if match:
-                    # Проверяем длину текущей строки
-                    if len(line) > max_line_length:
-                        results.append({
-                            "path": file_path.replace(target_dir, "").replace("\\", "/"),
-                            "line": line_num,
-                            "secret": f"СТРОКА НЕ СКАНИРОВАЛАСЬ т.к. её длина более {max_line_length} символов. Проверьте строку вручную",
-                            "context": f"Строка {line_num} содержит большое количество символов. Длина более {max_line_length}.",
-                            "severity": "Potential",
-                            "Type": "Too Long Line"
-                        })
-                        continue  # Пропускаем длинную строку
                     secret = match.group(0)
                     context = line.strip()
                     if not check_false_positive(secret, context):
@@ -178,7 +179,7 @@ async def scan_directory(request, target_dir, rules):
                 print(f"⚠️ Ошибка отправки промежуточного результата: {e}")
         
         # Обрабатываем файл с ограничениями
-        print(f"🔍 Сканируем файл {all_files_count}/{len(file_list)}: {os.path.basename(file_path)}")
+        # print(f"🔍 Сканируем файл {all_files_count}/{len(file_list)}: {os.path.basename(file_path)}")
         
         results = await search_secrets(
             file_path, 
