@@ -73,17 +73,20 @@ class SecretClassifier:
         probs = self.model.predict_proba(X_vec)
 
         for item, pred, proba in zip(secrets, preds, probs):
-            confidence = proba[pred]
-            if pred == 1:
-                # Уверен что секрет
-                item["severity"] = "High"
-            else:
-                if confidence > 0.80:
-                    # Уверен что не секрет
-                    item["severity"] = "Potential"
-                else:
-                    # Не уверен
+            if not item["severity"]:
+                confidence = proba[pred]
+                if pred == 1:
+                    # Уверен что секрет
                     item["severity"] = "High"
+                else:
+                    if confidence > 0.80:
+                        # Уверен что не секрет
+                        item["severity"] = "Potential"
+                    else:
+                        # Не уверен
+                        item["severity"] = "High"
+            else:
+                item["severity"] = "High"
         print(f"✅ Сканирование завершено")
         return secrets
 

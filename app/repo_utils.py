@@ -171,11 +171,18 @@ def download_repo_azure(repo_url, commit_id, extract_path):
 
         if response.status_code == 200:
             try:
-                zip_content = io.BytesIO(response.content)
-                with zipfile.ZipFile(zip_content) as zip_file:
-                    safe_extract(zip_file, extract_path)
+                #zip_content = io.BytesIO(response.content)
+                with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as temp_file:
+                    temp_zip_path = temp_file.name
+                    temp_file.write(response.content)
+
+                with zipfile.ZipFile(temp_zip_path) as zip_file:
+                    zip_file.extractall(extract_path)
+                    # safe_extract(zip_file, extract_path)
                 print(f"✅ Репозиторий успешно распакован в: {extract_path}")
+                os.unlink(temp_zip_path)
                 return extract_path, "Success"
+            
             except Exception as e:
                 print(f"❌ Ошибка при распаковке архива: {e}")
                 return_string = f"Ошибка при распаковке архива: {e}"

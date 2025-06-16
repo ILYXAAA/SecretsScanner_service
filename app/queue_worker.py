@@ -31,7 +31,7 @@ async def start_worker():
 async def process_request(request: ScanRequest, commit: str):
     my_tmp_folder = "tmp"
     os.makedirs(my_tmp_folder, exist_ok=True)
-    temp_dir = tempfile.mkdtemp(dir=my_tmp_folder)
+    temp_dir = tempfile.mkdtemp(dir="C:\\")
     # print(f"{temp_dir=}")
     try:
         #print(f"{commit=}")

@@ -32,7 +32,7 @@ def count_files(target_dir):
         count += len(files)
     return count
 
-def search_secrets(file_path, rules, target_dir):
+async def _analyze_file(file_path, rules, target_dir):
     results = []
     try:
         with open(file_path, "r", encoding="UTF-8", errors="ignore") as f:
@@ -53,21 +53,71 @@ def search_secrets(file_path, rules, target_dir):
                         "Type": rule.get("message", "Unknown")
                     })
     except Exception as error:
-        print(f"Error: {str(error)} Ошибка при обработке ${file_path}$")
+        print(f"❌ Error: {str(error)} — ошибка при обработке {file_path}")
     
     return results
+
+async def search_secrets(file_path, rules, target_dir, timeout=60):  # timeout в секундах
+    try:
+        return await asyncio.wait_for(
+            _analyze_file(file_path, rules, target_dir),
+            timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        results = []
+        results.append({
+                        "path": file_path.replace(target_dir, "").replace("\\", "/"),
+                        "line": 0,
+                        "secret": "ФАЙЛ НЕ СКАНИРОВАЛСЯ т.к. его анализ упал по таймауту. Проверьте файл вручную",
+                        "context": "ФАЙЛ НЕ СКАНИРОВАЛСЯ т.к. его анализ упал по таймауту. Проверьте файл вручную",
+                        "severity": "High",
+                        "Type": "Unknown"
+                    })
+        print(f"⏱️ Пропущен файл из-за тайм-аута: {file_path}")
+        return results
+
+# async def search_secrets(file_path, rules, target_dir):
+#     results = []
+#     print(f"{file_path=}")
+#     try:
+#         with open(file_path, "r", encoding="UTF-8", errors="ignore") as f:
+#             lines = f.readlines()
+
+#         for line_num, line in enumerate(lines, start=1):
+#             for rule in rules:
+#                 match = re.search(rule["pattern"], line)
+#                 if match:
+#                     secret = match.group(0)
+#                     context = line.strip()
+#                     results.append({
+#                         "path": file_path.replace(target_dir, "").replace("\\", "/"),
+#                         "line": line_num,
+#                         "secret": secret,
+#                         "context": context,
+#                         "severity": "",
+#                         "Type": rule.get("message", "Unknown")
+#                     })
+#     except Exception as error:
+#         print(f"Error: {str(error)} Ошибка при обработке ${file_path}$")
+    
+#     return results
 
 async def scan_directory(request, target_dir, rules):
     all_results = []
     file_list = []
     all_files_count = 0
-    total_files = count_files(target_dir)
-    SEND_PARTIAL_EVERY = max(1, total_files // 10)
 
     for root, _, files in os.walk(target_dir):
-        for file in files:
-            all_files_count += 1
-            if all_files_count % SEND_PARTIAL_EVERY == 0:
+        for file in files:           
+            file_ext = file.split(".")[-1].lower()
+            if file_ext in EXCLUDED_EXTENSIONS or file in EXCLUDED_FILES:
+                continue
+            file_list.append(os.path.join(root, file))
+
+    SEND_PARTIAL_EVERY = max(1, len(file_list) // 10)
+    for file_path in file_list:
+        all_files_count += 1
+        if all_files_count % SEND_PARTIAL_EVERY == 0:
                 payload = {
                     "Status": "partial",
                     "FilesScanned": all_files_count
@@ -75,13 +125,7 @@ async def scan_directory(request, target_dir, rules):
 
                 async with aiohttp.ClientSession() as session:
                     await session.post(request.CallbackUrl, json=payload)
-            file_ext = file.split(".")[-1].lower()
-            if file_ext in EXCLUDED_EXTENSIONS or file in EXCLUDED_FILES:
-                continue
-            file_list.append(os.path.join(root, file))
-
-    for file_path in file_list:
-        results = search_secrets(file_path, rules, target_dir)
+        results = await search_secrets(file_path, rules, target_dir)
         all_results.extend(results)
 
     return all_results, all_files_count
@@ -91,6 +135,7 @@ async def scan_repo(request, repo_path, projectName):
     rules = load_rules(RULES_FILE)
     print(f"✅ Начинаю сканирование {projectName}")
     results, all_files_count = await scan_directory(request, repo_path, rules)
+    print("ДИРЕКТОРИЯ ПРОСКАНИРОВАНА НАЧИНАЮ ВАЛИДАЦИЮ")
     sevveritied_secrets = model.filter_secrets(results)
 
     return sevveritied_secrets, all_files_count
