@@ -4,6 +4,7 @@ import yaml
 import re
 from app.model_loader import get_model_instance
 import aiohttp
+from concurrent.futures import ThreadPoolExecutor
 
 with open('Settings/excluded_files.yml', 'r') as f:
     data = yaml.safe_load(f)
@@ -32,7 +33,8 @@ def count_files(target_dir):
         count += len(files)
     return count
 
-async def _analyze_file(file_path, rules, target_dir):
+def _analyze_file_sync(file_path, rules, target_dir):
+    """Синхронная версия анализа файла"""
     results = []
     try:
         with open(file_path, "r", encoding="UTF-8", errors="ignore") as f:
@@ -57,22 +59,23 @@ async def _analyze_file(file_path, rules, target_dir):
     
     return results
 
-async def search_secrets(file_path, rules, target_dir, timeout=60):  # timeout в секундах
+async def search_secrets(file_path, rules, target_dir, timeout=60):
     try:
-        return await asyncio.wait_for(
-            _analyze_file(file_path, rules, target_dir),
-            timeout=timeout
-        )
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as executor:
+            return await asyncio.wait_for(
+                loop.run_in_executor(executor, _analyze_file_sync, file_path, rules, target_dir),
+                timeout=timeout
+            )
     except asyncio.TimeoutError:
-        results = []
-        results.append({
-                        "path": file_path.replace(target_dir, "").replace("\\", "/"),
-                        "line": 0,
-                        "secret": "ФАЙЛ НЕ СКАНИРОВАЛСЯ т.к. его анализ упал по таймауту. Проверьте файл вручную",
-                        "context": "ФАЙЛ НЕ СКАНИРОВАЛСЯ т.к. его анализ упал по таймауту. Проверьте файл вручную",
-                        "severity": "High",
-                        "Type": "Unknown"
-                    })
+        results = [{
+            "path": file_path.replace(target_dir, "").replace("\\", "/"),
+            "line": 0,
+            "secret": "ФАЙЛ НЕ СКАНИРОВАЛСЯ т.к. его анализ упал по таймауту. Проверьте файл вручную",
+            "context": "ФАЙЛ НЕ СКАНИРОВАЛСЯ т.к. его анализ упал по таймауту. Проверьте файл вручную",
+            "severity": "High",
+            "Type": "Unknown"
+        }]
         print(f"⏱️ Пропущен файл из-за тайм-аута: {file_path}")
         return results
 
