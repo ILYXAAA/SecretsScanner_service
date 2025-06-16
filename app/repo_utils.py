@@ -24,6 +24,7 @@ urllib3.disable_warnings()
 load_dotenv()
 
 HubType = os.getenv("HubType")
+MAX_PATH = 250
 
 # Аутентификация
 try:
@@ -84,6 +85,26 @@ async def download_repo(repo_url, commit_id, extract_path):
         extracted_path, status = download_github_repo(repo_url, commit_id, extract_path)
     return extracted_path, status
 
+def safe_extract(zip_file, extract_path):
+    for member in zip_file.infolist():
+        filename = member.filename
+
+        # Игнорируем абсолютные пути и ".."
+        if os.path.isabs(filename) or ".." in filename:
+            continue
+
+        full_path = os.path.join(extract_path, filename)
+
+        # Если слишком длинный — обрезаем путь
+        if len(full_path) > MAX_PATH:
+            base, name = os.path.split(full_path)
+            name = name[:100]  # Обрезаем имя файла
+            full_path = os.path.join(base, name)
+
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+
+        with zip_file.open(member) as source, open(full_path, "wb") as target:
+            target.write(source.read())
 
 def download_repo_azure(repo_url, commit_id, extract_path):
     os.makedirs(extract_path, exist_ok=True)
@@ -116,7 +137,7 @@ def download_repo_azure(repo_url, commit_id, extract_path):
             try:
                 zip_content = io.BytesIO(response.content)
                 with zipfile.ZipFile(zip_content) as zip_file:
-                    zip_file.extractall(path=extract_path)
+                    safe_extract(zip_file, extract_path)
                 print(f"✅ Репозиторий успешно распакован в: {extract_path}")
                 return extract_path, "Success"
             except Exception as e:
