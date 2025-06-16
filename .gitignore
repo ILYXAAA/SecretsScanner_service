@@ -9,6 +9,7 @@ tmp/
 Settings/login.dat
 Settings/password.dat
 Settings/pat_token.dat
+test.py
 
 # C extensions
 *.so
