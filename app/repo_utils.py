@@ -115,7 +115,7 @@ def download_repo_azure(repo_url, commit_id, extract_path):
         print(f"❌ Ошибка парсинга URL '{repo_url}': {e}")
         return False
 
-    base_url = f"http://{server}/{collection}"
+    base_url = f"https://{server}/{collection}"
     api_url = f"{base_url}/{project}/_apis/git/repositories/{repo_name}/items"
 
     params = {
@@ -131,7 +131,7 @@ def download_repo_azure(repo_url, commit_id, extract_path):
         print(f"📥 Скачиваем '{repo_name}' --> {commit_id[:7]}... auth_method: {auth_method}")
         auth = get_auth(auth_method)
 
-        response = requests.get(api_url, params=params, auth=auth, stream=True)
+        response = requests.get(api_url, params=params, auth=auth, stream=True, verify=False)
 
         if response.status_code == 200:
             try:
@@ -168,7 +168,7 @@ def download_github_repo(repo_url, commit_id, extract_path):
         print(f"🔽 Скачиваем {zip_url}...")
 
         # Скачиваем zip архив
-        response = requests.get(zip_url)
+        response = requests.get(zip_url, verify=False)
         response.raise_for_status()
 
         # Распаковываем архив в указанную папку
@@ -206,7 +206,7 @@ async def check_ref_and_resolve_azure(repo_url: str, ref_type: str, ref: str):
         try:
             server, collection, project, repository = parse_azure_devops_url(repo_url)
 
-            base_api_url = f"http://{server}/{collection}/{project}/_apis/git/repositories/{repository}"
+            base_api_url = f"https://{server}/{collection}/{project}/_apis/git/repositories/{repository}"
             api_version = "5.1-preview.1"
 
             if ref_type.lower() == "branch":
@@ -218,7 +218,7 @@ async def check_ref_and_resolve_azure(repo_url: str, ref_type: str, ref: str):
             else:
                 raise ValueError(f"❌ Неверный тип ref: {ref_type}")
 
-            response = requests.get(url, auth=auth)
+            response = requests.get(url, auth=auth, verify=False)
             if response.status_code not in [200, 201, 202, 203]:
                 if response.status_code in [401, 403]:
                     message = f"Access Denied: [{response.status_code}]. Проверьте, что у PAT-токена/NTLM Auth есть доступ к репозиторию."
