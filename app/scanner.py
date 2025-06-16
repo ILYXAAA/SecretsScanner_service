@@ -33,6 +33,54 @@ def count_files(target_dir):
         count += len(files)
     return count
 
+def check_false_positive(secret, context): # True если секрет фолза
+    if 'token cancellationtoken' in context.lower():
+        return True
+    if 'sha512' in context.lower():
+        return True
+    if 'sha256' in context.lower():
+        return True
+    # exception of resource files
+    if '.resx' in path:
+        return True
+    if 'password = null' in context.lower():
+        return True
+    if '{env.' in context.lower():
+        return True
+    if 'passwordsdonotmatchexception' in context.lower():
+        return True
+    if 'passwordexception' in context.lower():
+        return True
+    if 'CRED_ID' in context:
+        return True
+    if '"png' in context:
+        return True
+    if '"integrity' in context:
+        return True
+    if '"sha1' in context:
+        return True
+    if 'password) => {' in context:
+        return True
+    if 'credentials=None,' in context:
+        return True
+    if 'password: ${' in context:
+        return True
+    if 'CRED_ID = ' in context:
+        return True
+    if 'CredentialStore>(store)' in context:
+        return True
+    if 'CredentialStore.' in context:
+        return True
+    if '=\"$.' in context:
+        return True
+    if '=CREDIT}' in context:
+        return True
+    if '<password>${' in context:
+        return True
+    if 'secretKeyRef:' in context:
+        return True
+    return False
+
 async def _analyze_file(file_path, rules, target_dir, max_secrets=200, max_line_length=3000):
     """Асинхронная функция для анализа файла с ограничениями"""
     results = []
@@ -57,33 +105,33 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=200, max_line_
                 print(f"🛑 Прервано сканирование {file_path} - найдено более {max_secrets} секретов")
                 break
             
-            # Проверяем длину текущей строки
-            if len(line) > max_line_length:
-                results.append({
-                    "path": file_path.replace(target_dir, "").replace("\\", "/"),
-                    "line": line_num,
-                    "secret": f"СТРОКА НЕ СКАНИРОВАЛАСЬ т.к. её длина более {max_line_length} символов. Проверьте строку вручную",
-                    "context": f"Анализ прерван на строке {line_num}. Длина более {max_line_length} символов.",
-                    "severity": "Potential",
-                    "Type": "Too Long Line"
-                })
-                continue  # Пропускаем длинную строку
-            
             # Сканируем строку на предмет секретов
             for rule in rules:
                 match = re.search(rule["pattern"], line)
                 if match:
+                    # Проверяем длину текущей строки
+                    if len(line) > max_line_length:
+                        results.append({
+                            "path": file_path.replace(target_dir, "").replace("\\", "/"),
+                            "line": line_num,
+                            "secret": f"СТРОКА НЕ СКАНИРОВАЛАСЬ т.к. её длина более {max_line_length} символов. Проверьте строку вручную",
+                            "context": f"Строка {line_num} содержит большое количество символов. Длина более {max_line_length}.",
+                            "severity": "Potential",
+                            "Type": "Too Long Line"
+                        })
+                        continue  # Пропускаем длинную строку
                     secret = match.group(0)
                     context = line.strip()
-                    results.append({
-                        "path": file_path.replace(target_dir, "").replace("\\", "/"),
-                        "line": line_num,
-                        "secret": secret,
-                        "context": context,
-                        "severity": "",
-                        "Type": rule.get("message", "Unknown")
-                    })
-                    secrets_found += 1
+                    if not check_false_positive(secret, context):
+                        results.append({
+                            "path": file_path.replace(target_dir, "").replace("\\", "/"),
+                            "line": line_num,
+                            "secret": secret,
+                            "context": context,
+                            "severity": "",
+                            "Type": rule.get("message", "Unknown")
+                        })
+                        secrets_found += 1
                     
                     # Проверяем лимит после каждого найденного секрета
                     if secrets_found >= max_secrets:
