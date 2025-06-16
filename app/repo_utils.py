@@ -10,12 +10,25 @@ import aiohttp
 import re
 import io
 import shutil
+import yaml
 from dotenv import load_dotenv
 from app.secure_save import decrypt_from_file
 import urllib3
 import asyncio
 # Load environment variables
 load_dotenv()
+
+with open('Settings/excluded_files.yml', 'r') as f:
+    data = yaml.safe_load(f)
+
+# Преобразуем список в множество
+EXCLUDED_FILES = set(data.get('excluded_files', []))
+
+with open('Settings/excluded_extensions.yml', 'r') as f:
+    data = yaml.safe_load(f)
+
+# Преобразуем список в множество
+EXCLUDED_EXTENSIONS = set(data.get('excluded_extensions', []))
 
 # Disable SSL warnings
 urllib3.disable_warnings()
@@ -86,11 +99,33 @@ async def download_repo(repo_url, commit_id, extract_path):
     return extracted_path, status
 
 def safe_extract(zip_file, extract_path):
+    """
+    Безопасная распаковка ZIP архива с фильтрацией нежелательных файлов
+    
+    Args:
+        zip_file: ZipFile объект
+        extract_path: путь для распаковки
+        excluded_extensions: список исключенных расширений (например, ['.exe', '.bat'])
+        excluded_files: список исключенных имен файлов (например, ['autorun.inf', 'desktop.ini'])
+    """
+    
     for member in zip_file.infolist():
         filename = member.filename
 
         # Игнорируем абсолютные пути и ".."
         if os.path.isabs(filename) or ".." in filename:
+            continue
+        
+        # Получаем только имя файла без пути
+        basename = os.path.basename(filename).lower()
+        
+        # Проверяем исключенные файлы
+        if basename in EXCLUDED_FILES:
+            continue
+        
+        # Проверяем исключенные расширения
+        file_ext = os.path.splitext(basename)[1]
+        if file_ext in EXCLUDED_EXTENSIONS:
             continue
 
         full_path = os.path.join(extract_path, filename)
@@ -105,6 +140,7 @@ def safe_extract(zip_file, extract_path):
 
         with zip_file.open(member) as source, open(full_path, "wb") as target:
             target.write(source.read())
+
 
 def download_repo_azure(repo_url, commit_id, extract_path):
     os.makedirs(extract_path, exist_ok=True)
