@@ -17,7 +17,7 @@ app = FastAPI()
 # === PAT Token ===
 
 TOKEN_FILE = "Settings/pat_token.dat"
-MAX_WORKERS = 20
+MAX_WORKERS = 10
 RULES_PATH = "Settings/rules.yml"
 EXCLUDED_EXTENSIONS_PATH = "Settings/excluded_extensions.yml"
 EXCLUDED_FILES_PATH = "Settings/excluded_files.yml"
@@ -55,7 +55,8 @@ async def get_pat_token():
 @app.on_event("startup")
 async def startup_event():
     get_model_instance()
-    asyncio.create_task(start_worker())
+    for _ in range(MAX_WORKERS):
+        asyncio.create_task(start_worker())
 
 @app.get("/health")
 async def health():

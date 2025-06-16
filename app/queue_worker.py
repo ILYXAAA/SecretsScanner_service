@@ -25,9 +25,10 @@ async def add_to_queue_background(request: ScanRequest, commit: str):
 async def start_worker():
     while True:
         request, commit = await task_queue.get()
-        await process_request(request, commit)
+        # Запускаем в отдельной задаче
+        asyncio.create_task(process_request_async(request, commit))
         task_queue.task_done()
-
+        
 async def process_request(request: ScanRequest, commit: str):
     my_tmp_folder = "tmp"
     os.makedirs(my_tmp_folder, exist_ok=True)
