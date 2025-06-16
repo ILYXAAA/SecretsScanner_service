@@ -40,9 +40,6 @@ def check_false_positive(secret, context): # True если секрет фолз
         return True
     if 'sha256' in context.lower():
         return True
-    # exception of resource files
-    if '.resx' in path:
-        return True
     if 'password = null' in context.lower():
         return True
     if '{env.' in context.lower():
