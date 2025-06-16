@@ -93,9 +93,9 @@ def parse_azure_devops_url(repo_url):
 async def download_repo(repo_url, commit_id, extract_path):
     extracted_path = ""
     if HubType.lower() == "azure":
-        extracted_path, status = download_repo_azure(repo_url, commit_id, extract_path)
+        extracted_path, status = await download_repo_azure(repo_url, commit_id, extract_path)
     elif HubType.lower() == "github":
-        extracted_path, status = download_github_repo(repo_url, commit_id, extract_path)
+        extracted_path, status = await download_github_repo(repo_url, commit_id, extract_path)
     return extracted_path, status
 
 def safe_extract(zip_file, extract_path):
@@ -142,7 +142,7 @@ def safe_extract(zip_file, extract_path):
             target.write(source.read())
 
 
-def download_repo_azure(repo_url, commit_id, extract_path):
+def async download_repo_azure(repo_url, commit_id, extract_path):
     os.makedirs(extract_path, exist_ok=True)
 
     try:
@@ -192,7 +192,7 @@ def download_repo_azure(repo_url, commit_id, extract_path):
     return_string = f"Ошибка при скачивании {repo_name}: {response.status_code}"
     return "", return_string
 
-def download_github_repo(repo_url, commit_id, extract_path):
+def async download_github_repo(repo_url, commit_id, extract_path):
     """
     Скачивает архив репозитория GitHub на указанном коммите и распаковывает его.
 
