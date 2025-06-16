@@ -85,8 +85,7 @@ class SecretClassifier:
                     else:
                         # Не уверен
                         item["severity"] = "High"
-            else:
-                item["severity"] = "High"
+
         print(f"✅ Сканирование завершено")
         return secrets
 

@@ -33,14 +33,43 @@ def count_files(target_dir):
         count += len(files)
     return count
 
-def _analyze_file_sync(file_path, rules, target_dir):
-    """Полностью синхронная функция для обработки в отдельном потоке"""
+async def _analyze_file(file_path, rules, target_dir, max_secrets=200, max_line_length=3000):
+    """Асинхронная функция для анализа файла с ограничениями"""
     results = []
+    secrets_found = 0
+    
     try:
         with open(file_path, "r", encoding="UTF-8", errors="ignore") as f:
             lines = f.readlines()
 
         for line_num, line in enumerate(lines, start=1):
+            # Проверяем лимит найденных секретов
+            if secrets_found >= max_secrets:
+                results = []
+                results.append({
+                    "path": file_path.replace(target_dir, "").replace("\\", "/"),
+                    "line": line_num,
+                    "secret": f"ФАЙЛ НЕ СКАНИРОВАЛСЯ ПОЛНОСТЬЮ т.к. при анализе выявлено более {max_secrets} секретов. Проверьте файл вручную",
+                    "context": f"Прервано на строке {line_num}. Найдено секретов: {secrets_found}",
+                    "severity": "High",
+                    "Type": "Too Many Secrets"
+                })
+                print(f"🛑 Прервано сканирование {file_path} - найдено более {max_secrets} секретов")
+                break
+            
+            # Проверяем длину текущей строки
+            if len(line) > max_line_length:
+                results.append({
+                    "path": file_path.replace(target_dir, "").replace("\\", "/"),
+                    "line": line_num,
+                    "secret": f"СТРОКА НЕ СКАНИРОВАЛАСЬ т.к. её длина более {max_line_length} символов. Проверьте строку вручную",
+                    "context": f"Анализ прерван на строке {line_num}. Длина более {max_line_length} символов.",
+                    "severity": "Potential",
+                    "Type": "Too Long Line"
+                })
+                continue  # Пропускаем длинную строку
+            
+            # Сканируем строку на предмет секретов
             for rule in rules:
                 match = re.search(rule["pattern"], line)
                 if match:
@@ -54,43 +83,20 @@ def _analyze_file_sync(file_path, rules, target_dir):
                         "severity": "",
                         "Type": rule.get("message", "Unknown")
                     })
+                    secrets_found += 1
+                    
+                    # Проверяем лимит после каждого найденного секрета
+                    if secrets_found >= max_secrets:
+                        break
+                        
     except Exception as error:
         print(f"❌ Error: {str(error)} — ошибка при обработке {file_path}")
     
     return results
 
-async def search_secrets(file_path, rules, target_dir, timeout=60):
-    """Асинхронная обертка с реальным таймаутом"""
-    try:
-        loop = asyncio.get_event_loop()
-        
-        # Запускаем синхронную функцию в отдельном потоке
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = loop.run_in_executor(
-                executor, 
-                _analyze_file_sync, 
-                file_path, 
-                rules, 
-                target_dir
-            )
-            
-            # Теперь таймаут будет работать корректно
-            return await asyncio.wait_for(future, timeout=timeout)
-            
-    except asyncio.TimeoutError:
-        results = [{
-            "path": file_path.replace(target_dir, "").replace("\\", "/"),
-            "line": 0,
-            "secret": "ФАЙЛ НЕ СКАНИРОВАЛСЯ т.к. его анализ упал по таймауту. Проверьте файл вручную",
-            "context": "ФАЙЛ НЕ СКАНИРОВАЛСЯ т.к. его анализ упал по таймауту. Проверьте файл вручную",
-            "severity": "High",
-            "Type": "Unknown"
-        }]
-        print(f"⏱️ Пропущен файл из-за тайм-аута: {file_path}")
-        return results
-    except Exception as error:
-        print(f"❌ Общая ошибка при обработке {file_path}: {str(error)}")
-        return []
+async def search_secrets(file_path, rules, target_dir, max_secrets=200, max_line_length=3000):
+    """Простая обертка для анализа файла"""
+    return await _analyze_file(file_path, rules, target_dir, max_secrets, max_line_length)
 
 async def scan_directory(request, target_dir, rules):
     all_results = []
@@ -126,9 +132,16 @@ async def scan_directory(request, target_dir, rules):
             except Exception as e:
                 print(f"⚠️ Ошибка отправки промежуточного результата: {e}")
         
-        # Обрабатываем файл с таймаутом
-        print(f"🔍 Сканируем файл {all_files_count}/{len(file_list)}: {file_path}")
-        results = await search_secrets(file_path, rules, target_dir)
+        # Обрабатываем файл с ограничениями
+        print(f"🔍 Сканируем файл {all_files_count}/{len(file_list)}: {os.path.basename(file_path)}")
+        
+        results = await search_secrets(
+            file_path, 
+            rules, 
+            target_dir, 
+            max_secrets=200,      # максимум секретов в файле
+            max_line_length=3000  # максимум символов в строке
+        )
         all_results.extend(results)
 
     print(f"✅ Сканирование завершено. Обработано файлов: {all_files_count}")
