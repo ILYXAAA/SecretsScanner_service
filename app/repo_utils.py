@@ -47,16 +47,15 @@ except Exception as error:
 
 auth_methods = ["pat", "basic", "Negotiate"]
 
-def get_auth_headers():
-    """Возвращает заголовки для aiohttp"""
-    if pat:
-        import base64
-        credentials = base64.b64encode(f":{pat}".encode()).decode()
-        return {"Authorization": f"Basic {credentials}"}
-    elif username and password:
-        # Для NTLM используем requests в executor
+def get_auth(auth_method):
+    if auth_method == 'pat' and pat:
+        return HTTPBasicAuth("", pat)
+    elif auth_method == 'basic' and username and password:
+        return HttpNtlmAuth(username, password)
+    elif auth_method == 'Negotiate':
+        return HttpNegotiateAuth()
+    else:
         return None
-    return {}
 
 def parse_azure_devops_url(repo_url):
     parsed = urlparse(repo_url)
@@ -120,7 +119,7 @@ def safe_extract(zip_file, extract_path):
             target.write(source.read())
 
 async def download_repo_azure_async(repo_url, commit_id, extract_path):
-    """Асинхронное скачивание Azure DevOps репозитория"""
+    """Асинхронное скачивание Azure DevOps репозитория через requests в executor"""
     os.makedirs(extract_path, exist_ok=True)
 
     try:
@@ -141,41 +140,41 @@ async def download_repo_azure_async(repo_url, commit_id, extract_path):
         "api-version": "5.1-preview.1"
     }
 
-    headers = get_auth_headers()
+    # Используем requests в executor для поддержки всех типов аутентификации
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _download_azure_sync, api_url, params, repo_name, commit_id, extract_path)
+
+def _download_azure_sync(api_url, params, repo_name, commit_id, extract_path):
+    """Синхронное скачивание Azure через requests для executor"""
+    import requests
     
-    print(f"📥 Скачиваю '{repo_name}' --> {commit_id[:7]}... (async)")
+    for auth_method in auth_methods:
+        print(f"📥 Скачиваю '{repo_name}' --> {commit_id[:7]}... auth_method: {auth_method}")
+        auth = get_auth(auth_method)
 
-    try:
-        connector = aiohttp.TCPConnector(ssl=False)
-        timeout = aiohttp.ClientTimeout(total=300)  # 5 минут
-        
-        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-            async with session.get(api_url, params=params, headers=headers) as response:
-                if response.status == 200:
-                    content = await response.read()
-                    
-                    # Создаем временный файл асинхронно
-                    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as temp_file:
-                        temp_zip_path = temp_file.name
-                        temp_file.write(content)
+        try:
+            response = requests.get(api_url, params=params, auth=auth, stream=True, verify=False, timeout=300)
 
-                    # Распаковка в отдельном потоке
-                    await asyncio.get_event_loop().run_in_executor(
-                        None, _extract_zip, temp_zip_path, extract_path
-                    )
-                    
-                    os.unlink(temp_zip_path)
-                    print(f"✅ Репозиторий успешно распакован в: {extract_path}")
-                    return extract_path, "Success"
-                else:
-                    error_msg = f"Ошибка {response.status}: {await response.text()}"
-                    print(f"❌ {error_msg}")
-                    return "", error_msg
-                    
-    except Exception as e:
-        error_msg = f"Ошибка при скачивании: {e}"
-        print(f"❌ {error_msg}")
-        return "", error_msg
+            if response.status_code == 200:
+                with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as temp_file:
+                    temp_zip_path = temp_file.name
+                    temp_file.write(response.content)
+
+                with zipfile.ZipFile(temp_zip_path) as zip_file:
+                    zip_file.extractall(extract_path)
+                
+                os.unlink(temp_zip_path)
+                print(f"✅ Репозиторий успешно распакован в: {extract_path}")
+                return extract_path, "Success"
+            else:
+                print(f"❌ Auth method {auth_method} failed: {response.status_code}")
+                continue
+                
+        except Exception as e:
+            print(f"❌ Error with {auth_method}: {e}")
+            continue
+    
+    return "", f"Все методы аутентификации не сработали для {repo_name}"
 
 async def download_github_repo_async(repo_url, commit_id, extract_path):
     """Асинхронное скачивание GitHub репозитория"""
@@ -224,8 +223,17 @@ def _extract_zip_from_bytes(content, extract_path):
 
 # Остальные функции остаются синхронными, так как они быстрые
 async def check_ref_and_resolve_azure(repo_url: str, ref_type: str, ref: str):
+    """Асинхронная проверка через requests в executor для поддержки NTLM/Negotiate"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _check_ref_azure_sync, repo_url, ref_type, ref)
+
+def _check_ref_azure_sync(repo_url: str, ref_type: str, ref: str):
+    """Синхронная проверка Azure для executor"""
+    import requests
+    
     message = ""
     for auth_method in auth_methods:
+        auth = get_auth(auth_method)
         print(f"Try to resolve {repo_url} --> {ref_type}. auth_method={auth_method}")
         
         try:
@@ -242,34 +250,29 @@ async def check_ref_and_resolve_azure(repo_url: str, ref_type: str, ref: str):
             else:
                 raise ValueError(f"❌ Неверный тип ref: {ref_type}")
 
-            headers = get_auth_headers()
+            response = requests.get(url, auth=auth, verify=False, timeout=20)
             
-            connector = aiohttp.TCPConnector(ssl=False)
-            timeout = aiohttp.ClientTimeout(total=20)
+            if response.status_code not in [200, 201, 202, 203]:
+                if response.status_code in [401, 403]:
+                    message = f"Access Denied: [{response.status_code}]. Проверьте, что у PAT-токена/NTLM Auth есть доступ к репозиторию."
+                else:
+                    message = f"Запрос к репозиторию выдал {response.status_code} код. Возможно неверные креды или нет доступа к репозиторию"
+                continue
+                
+            message = ""
+            data = response.json()
             
-            async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-                async with session.get(url, headers=headers) as response:
-                    if response.status not in [200, 201, 202, 203]:
-                        if response.status in [401, 403]:
-                            message = f"Access Denied: [{response.status}]. Проверьте, что у PAT-токена есть доступ к репозиторию."
-                        else:
-                            message = f"Запрос к репозиторию выдал {response.status} код. Возможно неверные креды или нет доступа к репозиторию"
-                        continue
-                    
-                    message = ""
-                    data = await response.json()
-                    
-                    if ref_type.lower() in ("branch", "tag"):
-                        if data.get("count", 0) == 0:
-                            return False, None, message
-                        commit_hash = data["value"][0]["objectId"]
-                        return True, commit_hash, message
-                    elif ref_type.lower() == "commit":
-                        commit_hash = data.get("commitId")
-                        if commit_hash:
-                            return True, commit_hash, message
-                        return False, None, message
-            
+            if ref_type.lower() in ("branch", "tag"):
+                if data.get("count", 0) == 0:
+                    return False, None, message
+                commit_hash = data["value"][0]["objectId"]
+                return True, commit_hash, message
+            elif ref_type.lower() == "commit":
+                commit_hash = data.get("commitId")
+                if commit_hash:
+                    return True, commit_hash, message
+                return False, None, message
+        
         except Exception as e:
             print(f"❌ Ошибка при проверке Azure DevOps ссылки: {e}")
             message = f"Ошибка при проверке Azure DevOps ссылки: {e}"
