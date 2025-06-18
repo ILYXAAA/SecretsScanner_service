@@ -23,6 +23,7 @@ MAX_WORKERS = int(os.getenv("MAX_WORKERS", "10"))  # Increased default workers
 RULES_PATH = "Settings/rules.yml"
 EXCLUDED_EXTENSIONS_PATH = "Settings/excluded_extensions.yml"
 EXCLUDED_FILES_PATH = "Settings/excluded_files.yml"
+FP_FILE_PATH = "Settings/false-positive.yml"
 
 # Global worker tasks list for cleanup
 worker_tasks = []
@@ -480,3 +481,69 @@ async def do_update_excluded_extensions(content: str):
     }
 
 # Remove custom signal handlers - let uvicorn handle them
+
+
+
+##########################################
+# False-Positive Rules.yml ###############
+##########################################
+@app.get("/rules-fp-info")
+async def rules_fp_info():
+    if os.path.exists(FP_FILE_PATH):
+        stat = os.stat(FP_FILE_PATH)
+        return {
+            "exists": True,
+            "size": stat.st_size,
+            "modified": stat.st_mtime,
+            "path": os.path.abspath(FP_FILE_PATH)
+        }
+    return {
+        "exists": False,
+        "size": 0,
+        "modified": 0.0,
+        "path": os.path.abspath(FP_FILE_PATH)
+    }
+
+@app.get("/get-fp-rules")
+async def get_fp_rules():
+    try:
+        if not os.path.exists(FP_FILE_PATH):
+            return JSONResponse(status_code=404, content={"status": "failed", "message": "Файл не найден"})
+        
+        async with aiofiles.open(FP_FILE_PATH, mode='r', encoding='utf-8') as f:
+            content = await f.read()
+
+        return {"status": "success", "rules": content}
+    
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "status": "failed",
+            "message": f"Ошибка при чтении файла: {str(e)}"
+        })
+
+@app.post("/update-fp-rules")
+async def update_fp_rules(data: RulesContent):
+    try:
+        info = await update_fp_rules_file(data.content)
+        return {"status": "success", **info}
+    except Exception as e:
+        return {
+            "status": "failed",
+            "message": f"Произошла ошибка: {e}",
+            "filename": FP_FILE_PATH,
+            "size": 0
+        }
+    
+async def update_fp_rules_file(content: str):
+    # Заменяем \r\n и \r на \n (унифицированный формат)
+    normalized_content = content.replace('\r\n', '\n').replace('\r', '\n')
+
+    async with aiofiles.open(FP_FILE_PATH, 'w', encoding='utf-8') as out_file:
+        await out_file.write(normalized_content)
+
+    size = os.path.getsize(FP_FILE_PATH)
+    return {
+        "message": f"Файл {FP_FILE_PATH} успешно обновлен",
+        "filename": FP_FILE_PATH,
+        "size": size
+    }

@@ -16,6 +16,11 @@ with open('Settings/excluded_extensions.yml', 'r') as f:
 
 EXCLUDED_EXTENSIONS = set(data.get('excluded_extensions', []))
 
+with open('Settings/false-positive.yml', 'r') as f:
+    data = yaml.safe_load(f)
+
+FALSE_POSITIVE_RULES = set(data.get('false_positive', []))
+
 RULES_FILE = "Settings/rules.yml"
 
 def load_rules(rules_file="Settings/rules.yml"):
@@ -32,17 +37,9 @@ def count_files(target_dir):
     return count
 
 def check_false_positive(secret, context):
-    """True если секрет ложный"""
-    false_positive_patterns = [
-        'token cancellationtoken', 'sha512', 'sha256', 'password = null',
-        '{env.', 'passwordsdonotmatchexception', 'passwordexception', 'CRED_ID',
-        '"png', '"integrity', '"sha1', 'password) => {', 'credentials=None,',
-        'password: ${', 'CRED_ID = ', 'CredentialStore>(store)', 'CredentialStore.',
-        '=\"$.', '=CREDIT}', '<password>${', 'secretKeyRef:'
-    ]
-    
+    """True если секрет ложный"""  
     context_lower = context.lower()
-    return any(pattern in context_lower for pattern in false_positive_patterns)
+    return any(pattern in context_lower for pattern.lower() in FALSE_POSITIVE_RULES)
 
 async def _analyze_file(file_path, rules, target_dir, max_secrets=200, max_line_length=3000):
     """Асинхронная функция для анализа файла с ограничениями"""
