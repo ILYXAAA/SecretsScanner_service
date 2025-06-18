@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
-from app.models import ScanRequest, PATTokenRequest, RulesContent
-from app.queue_worker import task_queue, start_worker, add_to_queue_background, cleanup_executors
+from app.models import ScanRequest, PATTokenRequest, RulesContent, MultiScanRequest, MultiScanResponse, MultiScanResponseItem
+from app.queue_worker import task_queue, start_worker, add_to_queue_background, add_multi_scan_to_queue, cleanup_executors
 from app.model_loader import get_model_instance
 from app.repo_utils import check_ref_and_resolve_git, check_ref_and_resolve_azure
 import asyncio
@@ -123,8 +123,104 @@ async def health():
         "status": "healthy", 
         "queue_size": task_queue.qsize(),
         "max_workers": MAX_WORKERS,
-        "active_workers": len(worker_tasks)
+        "active_workers": len(worker_tasks),
+        "supports_multi_scan": True
     }
+
+# === Multi-Scanning Endpoint ===
+
+@app.post("/multi_scan")
+async def multi_scan(request: MultiScanRequest):
+    """Process multiple repositories sequentially"""
+    
+    # Check queue capacity
+    if task_queue.qsize() >= MAX_WORKERS * 2:
+        return JSONResponse(status_code=429, content={
+            "status": "queue_full",
+            "message": f"Очередь переполнена ({task_queue.qsize()} задач). Попробуйте позже.",
+            "data": []
+        })
+
+    response_data = []
+    all_resolved = True
+    error_message = ""
+
+    # Validate all repositories first
+    for repo in request.repositories:
+        try:
+            if HubType.lower() == "github":
+                exists, commit, message = await check_ref_and_resolve_git(repo.RepoUrl, repo.RefType, repo.Ref)
+            else:
+                exists, commit, message = await check_ref_and_resolve_azure(repo.RepoUrl, repo.RefType, repo.Ref)
+            
+            if exists:
+                response_data.append(MultiScanResponseItem(
+                    ProjectName=repo.ProjectName,
+                    RefType=repo.RefType,
+                    Ref=repo.Ref,
+                    commit=commit
+                ))
+                print(f"✅ Resolved {repo.ProjectName}: {commit[:6]}")
+            else:
+                all_resolved = False
+                response_data.append(MultiScanResponseItem(
+                    ProjectName=repo.ProjectName,
+                    RefType=repo.RefType,
+                    Ref=repo.Ref,
+                    commit="not_found"
+                ))
+                print(f"❌ Failed to resolve {repo.ProjectName}: {message}")
+                if not error_message:
+                    error_message = message or f"Не удалось найти {repo.RefType} '{repo.Ref}'"
+                    
+        except Exception as e:
+            all_resolved = False
+            response_data.append(MultiScanResponseItem(
+                ProjectName=repo.ProjectName,
+                RefType=repo.RefType,
+                Ref=repo.Ref,
+                commit="not_found"
+            ))
+            print(f"❌ Error resolving {repo.ProjectName}: {e}")
+            if not error_message:
+                error_message = str(e)
+
+    # Respond based on validation results
+    if all_resolved:
+        # Convert to format for queue
+        multi_scan_items = []
+        commits = []
+        
+        for repo, response_item in zip(request.repositories, response_data):
+            multi_scan_items.append({
+                "ProjectName": repo.ProjectName,
+                "RepoUrl": repo.RepoUrl,
+                "RefType": repo.RefType,
+                "Ref": repo.Ref,
+                "CallbackUrl": repo.CallbackUrl
+            })
+            commits.append(response_item.commit)
+        
+        # Add to queue for sequential processing
+        await add_multi_scan_to_queue(multi_scan_items, commits)
+        
+        return JSONResponse(
+            content={
+                "status": "accepted",
+                "message": "Мультисканирование добавлено в очередь ✅",
+                "data": [item.dict() for item in response_data]
+            },
+            status_code=200
+        )
+    else:
+        return JSONResponse(
+            content={
+                "status": "validation_failed",
+                "message": f"Не удалось отрезолвить коммиты: {error_message}",
+                "data": [item.dict() for item in response_data]
+            },
+            status_code=400
+        )
 
 # === Scanning Endpoint ===
 

@@ -51,7 +51,7 @@ except Exception as error:
     print(f"Error: {str(error)}")
     print("Если это первый запуск - необходимо запустить мастер настройки Auth данных `python app/secure_save.py`")
 
-auth_methods = ["pat", "basic", "Negotiate"]  # 'pat', 'basic', 'Negotiate' или None
+auth_methods = ["basic", "pat", "Negotiate"]  # 'pat', 'basic', 'Negotiate' или None
 
 
 def get_auth(auth_method):

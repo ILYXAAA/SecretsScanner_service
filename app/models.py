@@ -12,3 +12,24 @@ class PATTokenRequest(BaseModel):
 
 class RulesContent(BaseModel):
     content: str
+
+class MultiScanItem(BaseModel):
+    ProjectName: str
+    RepoUrl: str
+    RefType: str
+    Ref: str
+    CallbackUrl: str
+
+class MultiScanRequest(BaseModel):
+    repositories: List[MultiScanItem]
+
+class MultiScanResponseItem(BaseModel):
+    ProjectName: str
+    RefType: str
+    Ref: str
+    commit: str
+
+class MultiScanResponse(BaseModel):
+    status: str
+    message: str
+    data: List[MultiScanResponseItem]

@@ -31,17 +31,125 @@ async def add_to_queue_background(request: ScanRequest, commit: str):
     await task_queue.put((request, commit))
     print(f"📥 Проект {request.ProjectName} поставлен в очередь на сканирование")
 
+async def add_multi_scan_to_queue(multi_scan_items: list, commits: list):
+    """Add multi-scan sequence to queue"""
+    await task_queue.put(("multi_scan", multi_scan_items, commits))
+    print(f"📥 Мультисканирование {len(multi_scan_items)} проектов поставлено в очередь")
+
 async def start_worker():
     """Worker that processes requests concurrently"""
     while True:
         try:
-            request, commit = await task_queue.get()
-            # Process each request in parallel without blocking other workers
-            asyncio.create_task(process_request_async(request, commit))
+            item = await task_queue.get()
+            
+            # Check if this is a multi-scan or single scan
+            if isinstance(item, tuple) and len(item) == 3 and item[0] == "multi_scan":
+                # Multi-scan processing
+                _, multi_scan_items, commits = item
+                asyncio.create_task(process_multi_scan_sequence(multi_scan_items, commits))
+            else:
+                # Single scan processing
+                request, commit = item
+                asyncio.create_task(process_request_async(request, commit))
+            
             task_queue.task_done()
         except Exception as e:
             print(f"❌ Worker error: {e}")
             await asyncio.sleep(1)
+
+async def process_multi_scan_sequence(multi_scan_items: list, commits: list):
+    """Process multi-scan repositories sequentially"""
+    print(f"🔄 Начинаю последовательное мультисканирование {len(multi_scan_items)} репозиториев")
+    
+    for i, (item_dict, commit) in enumerate(zip(multi_scan_items, commits)):
+        try:
+            # Convert dict back to ScanRequest
+            from app.models import ScanRequest
+            request = ScanRequest(**item_dict)
+            
+            print(f"📋 Мультискан [{i+1}/{len(multi_scan_items)}]: {request.ProjectName}")
+            
+            # Process sequentially (wait for completion)
+            await process_request_sequential(request, commit)
+            
+            print(f"✅ Мультискан [{i+1}/{len(multi_scan_items)}] завершен: {request.ProjectName}")
+            
+        except Exception as e:
+            print(f"❌ Ошибка в мультискане [{i+1}/{len(multi_scan_items)}]: {e}")
+            # Continue with next repository even if one fails
+            try:
+                if 'request' in locals():
+                    await send_error_callback(request.CallbackUrl, f"Ошибка мультисканирования: {str(e)}")
+            except:
+                pass
+    
+    print(f"🎯 Мультисканирование завершено: {len(multi_scan_items)} репозиториев")
+
+async def process_request_sequential(request: ScanRequest, commit: str):
+    """Sequential processing for multi-scan (blocks until complete)"""
+    temp_dir = tempfile.mkdtemp(dir=os.getenv("TEMP_DIR", "C:\\"))
+    
+    try:
+        # Step 1: Download repository
+        print(f"🔄 Скачиваю {request.ProjectName}")
+        loop = asyncio.get_event_loop()
+        
+        extracted_repo_path, status_message = await loop.run_in_executor(
+            download_executor, 
+            download_repo_sync, 
+            request.RepoUrl, 
+            commit, 
+            temp_dir
+        )
+        
+        if not extracted_repo_path:
+            await send_error_callback(request.CallbackUrl, status_message)
+            return
+            
+        print(f"✅ Скачано {request.ProjectName}")
+        
+        # Step 2: Scan repository
+        print(f"🔍 Сканирую {request.ProjectName}")
+        
+        request_dict = {
+            "ProjectName": request.ProjectName,
+            "RepoUrl": request.RepoUrl,
+            "RefType": request.RefType,
+            "Ref": request.Ref,
+            "CallbackUrl": request.CallbackUrl
+        }
+        
+        results, all_files_count = await loop.run_in_executor(
+            model_executor,
+            scan_repo_with_model,
+            extracted_repo_path,
+            request.ProjectName,
+            request_dict
+        )
+        
+        print(f"✅ Просканировано {request.ProjectName}")
+        
+        # Step 3: Send results
+        payload = {
+            "Status": "completed",
+            "Message": "Scanned Successfully",
+            "ProjectName": request.ProjectName,
+            "ProjectRepoUrl": request.RepoUrl,
+            "RepoCommit": commit,
+            "Results": results,
+            "FilesScanned": all_files_count
+        }
+        
+        await send_callback(request.CallbackUrl, payload)
+        print(f"✅ Результаты отправлены для {request.ProjectName}")
+        
+    except Exception as e:
+        print(f"❌ Ошибка при обработке {request.ProjectName}: {e}")
+        await send_error_callback(request.CallbackUrl, str(e))
+    finally:
+        # Cleanup
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(download_executor, delete_dir, temp_dir)
 
 def download_repo_sync(repo_url: str, commit: str, temp_dir: str) -> Tuple[str, str]:
     """Synchronous wrapper for download_repo to run in thread pool"""
