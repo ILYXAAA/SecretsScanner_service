@@ -1,22 +1,22 @@
 false_positive:
-- token cancellationtoken
-- sha512
-- sha256
-- password = null
-- "{env."
-- passwordsdonotmatchexception
-- passwordexception
-- CRED_ID
-- "png
-- "integrity
-- "sha1
-- password) => {
-- credentials=None,
-- "password: ${"
-- CRED_ID = 
-- CredentialStore>(store)
-- CredentialStore.
-- =\"$.
-- =CREDIT}
-- <password>${
-- secretKeyRef:-
+  - "token cancellationtoken"
+  - "sha512"
+  - "sha256"
+  - "password = null"
+  - "{env."
+  - "passwordsdonotmatchexception"
+  - "passwordexception"
+  - "CRED_ID"
+  - "png"
+  - "integrity"
+  - "sha1"
+  - "password) => {"
+  - "credentials=None,"
+  - "password: ${"
+  - "CRED_ID ="
+  - "CredentialStore>(store)"
+  - "CredentialStore."
+  - "=\"$."
+  - "=CREDIT}"
+  - "<password>${"
+  - "secretKeyRef:-"

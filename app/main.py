@@ -513,7 +513,7 @@ async def get_fp_rules():
         async with aiofiles.open(FP_FILE_PATH, mode='r', encoding='utf-8') as f:
             content = await f.read()
 
-        return {"status": "success", "rules": content}
+        return {"status": "success", "fp_rules": content}
     
     except Exception as e:
         return JSONResponse(status_code=500, content={
