@@ -37,9 +37,9 @@ def count_files(target_dir):
     return count
 
 def check_false_positive(secret, context):
-    """True если секрет ложный"""  
+    """True если секрет ложный"""
     context_lower = context.lower()
-    return any(pattern in context_lower for pattern.lower() in FALSE_POSITIVE_RULES)
+    return any(pattern.lower() in context_lower for pattern in FALSE_POSITIVE_RULES)
 
 async def _analyze_file(file_path, rules, target_dir, max_secrets=200, max_line_length=3000):
     """Асинхронная функция для анализа файла с ограничениями"""
