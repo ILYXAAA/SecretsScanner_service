@@ -273,7 +273,7 @@ async def check_ref_and_resolve_azure(repo_url: str, ref_type: str, ref: str):
             if ref_type.lower() in ("branch", "tag"):
                 if data.get("count", 0) == 0:
                     return False, None, message
-                commit_hash = data["value"][0]["objectId"]
+                commit_hash = data["value"][0].get("peeledObjectId", data["value"][0]["objectId"])
                 return True, commit_hash, message
             elif ref_type.lower() == "commit":
                 commit_hash = data.get("commitId")
