@@ -17,7 +17,7 @@ app = FastAPI()
 # === PAT Token ===
 
 TOKEN_FILE = "Settings/pat_token.dat"
-MAX_WORKERS = 10
+MAX_WORKERS = 10  # Увеличено для большей конкурентности
 RULES_PATH = "Settings/rules.yml"
 EXCLUDED_EXTENSIONS_PATH = "Settings/excluded_extensions.yml"
 EXCLUDED_FILES_PATH = "Settings/excluded_files.yml"
@@ -54,9 +54,20 @@ async def get_pat_token():
 # Запускаем worker при старте
 @app.on_event("startup")
 async def startup_event():
+    # Инициализируем модель
     get_model_instance()
-    for _ in range(MAX_WORKERS):
+    
+    # Запускаем несколько воркеров для конкурентной обработки
+    for i in range(MAX_WORKERS):
         asyncio.create_task(start_worker())
+    
+    print(f"✅ Запущено {MAX_WORKERS} воркеров для обработки запросов")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    # Корректно завершаем пул потоков модели
+    model = get_model_instance()
+    model.shutdown()
 
 @app.get("/health")
 async def health():
@@ -64,12 +75,13 @@ async def health():
 
 @app.post("/scan")
 async def scan(request: ScanRequest):
-    if task_queue.qsize() >= MAX_WORKERS:  # max workers limit
+    # Убираем жесткое ограничение на размер очереди, теперь у нас конкурентная обработка
+    if task_queue.qsize() >= MAX_WORKERS * 3:  # Более мягкое ограничение
         return JSONResponse(status_code=429, content={
-            "status": "maximum workers exceeded",
+            "status": "queue_full",
             "RefType": request.RefType,
             "Ref": request.Ref,
-            "message": "Превышено количество workers, ожидайте"
+            "message": "Очередь переполнена, попробуйте позже"
         })
 
     try:
@@ -77,16 +89,17 @@ async def scan(request: ScanRequest):
             exists, commit, message = await check_ref_and_resolve_git(request.RepoUrl, request.RefType, request.Ref)
         else:
             exists, commit, message = await check_ref_and_resolve_azure(request.RepoUrl, request.RefType, request.Ref)
+        
         if not exists:
-                if message:
-                    return JSONResponse(status_code=400, content={
-                        "status": f"validation_failed",
-                        "RefType": request.RefType,
-                        "Ref": request.Ref,
-                        "message": message
-                    })
-                else:
-                    raise ValueError(f"{request.RefType} '{request.Ref}' не найден в репозитории {request.RepoUrl}")
+            if message:
+                return JSONResponse(status_code=400, content={
+                    "status": f"validation_failed",
+                    "RefType": request.RefType,
+                    "Ref": request.Ref,
+                    "message": message
+                })
+            else:
+                raise ValueError(f"{request.RefType} '{request.Ref}' не найден в репозитории {request.RepoUrl}")
         
         print(f"✅ Commit resolved {commit[0:6]}..")
 
