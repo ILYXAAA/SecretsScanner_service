@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
 from app.models import ScanRequest, PATTokenRequest, RulesContent
-from app.queue_worker import task_queue, start_worker, add_to_queue_background
+from app.queue_worker import task_queue, start_worker, add_to_queue_background, cleanup_executors
 from app.model_loader import get_model_instance
 from app.repo_utils import check_ref_and_resolve_git, check_ref_and_resolve_azure
 import asyncio
@@ -9,18 +9,25 @@ import os
 import aiofiles
 from app.secure_save import encrypt_and_save, decrypt_from_file
 from dotenv import load_dotenv
+import signal
+import sys
+
 load_dotenv()
 
 HubType = os.getenv("HubType")
 app = FastAPI()
 
-# === PAT Token ===
-
+# Configuration
 TOKEN_FILE = "Settings/pat_token.dat"
-MAX_WORKERS = 10  # Увеличено для большей конкурентности
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", "10"))  # Increased default workers
 RULES_PATH = "Settings/rules.yml"
 EXCLUDED_EXTENSIONS_PATH = "Settings/excluded_extensions.yml"
 EXCLUDED_FILES_PATH = "Settings/excluded_files.yml"
+
+# Global worker tasks list for cleanup
+worker_tasks = []
+
+# === PAT Token Endpoints ===
 
 @app.post("/set-pat")
 async def set_pat_token(payload: PATTokenRequest):
@@ -50,41 +57,90 @@ async def get_pat_token():
         return {"status": "failed", "message": f"Error: {str(error)}"}
     return {"status": "success", "token": masked}
 
+# === Application Lifecycle ===
 
-# Запускаем worker при старте
 @app.on_event("startup")
 async def startup_event():
-    # Инициализируем модель
-    get_model_instance()
+    """Initialize model and start concurrent workers"""
+    global worker_tasks
     
-    # Запускаем несколько воркеров для конкурентной обработки
+    print(f"🚀 Запуск сервиса с {MAX_WORKERS} воркерами...")
+    
+    # Pre-load model in main process
+    try:
+        get_model_instance()
+        print("✅ Модель загружена в основном процессе")
+    except Exception as e:
+        print(f"⚠️ Ошибка загрузки модели: {e}")
+    
+    # Start concurrent workers
     for i in range(MAX_WORKERS):
-        asyncio.create_task(start_worker())
+        task = asyncio.create_task(start_worker())
+        worker_tasks.append(task)
+        print(f"✅ Воркер {i+1} запущен")
     
-    print(f"✅ Запущено {MAX_WORKERS} воркеров для обработки запросов")
+    print(f"🎯 Сервис готов к обработке запросов")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    # Корректно завершаем пул потоков модели
-    model = get_model_instance()
-    model.shutdown()
+    """Graceful shutdown"""
+    global worker_tasks
+    
+    print("🛑 Начинаю остановку сервиса...")
+    
+    try:
+        # Cancel all worker tasks
+        for task in worker_tasks:
+            if not task.done():
+                task.cancel()
+        
+        # Wait for tasks to complete with timeout
+        if worker_tasks:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*worker_tasks, return_exceptions=True),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                print("⚠️ Timeout при остановке воркеров")
+        
+        # Cleanup executors
+        try:
+            await cleanup_executors()
+        except Exception as e:
+            print(f"⚠️ Ошибка при очистке executors: {e}")
+        
+    except Exception as e:
+        print(f"⚠️ Ошибка при shutdown: {e}")
+    finally:
+        print("✅ Сервис остановлен")
+
+# === Health Check ===
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "queue_size": task_queue.qsize()}
+    return {
+        "status": "healthy", 
+        "queue_size": task_queue.qsize(),
+        "max_workers": MAX_WORKERS,
+        "active_workers": len(worker_tasks)
+    }
+
+# === Scanning Endpoint ===
 
 @app.post("/scan")
 async def scan(request: ScanRequest):
-    # Убираем жесткое ограничение на размер очереди, теперь у нас конкурентная обработка
-    if task_queue.qsize() >= MAX_WORKERS * 3:  # Более мягкое ограничение
+    # Check queue capacity (allow some buffer over max workers)
+    if task_queue.qsize() >= MAX_WORKERS * 2:
         return JSONResponse(status_code=429, content={
             "status": "queue_full",
             "RefType": request.RefType,
             "Ref": request.Ref,
-            "message": "Очередь переполнена, попробуйте позже"
+            "message": f"Очередь переполнена ({task_queue.qsize()} задач). Попробуйте позже."
         })
 
     try:
+        # Validate reference exists and resolve to commit
         if HubType.lower() == "github":
             exists, commit, message = await check_ref_and_resolve_git(request.RepoUrl, request.RefType, request.Ref)
         else:
@@ -93,7 +149,7 @@ async def scan(request: ScanRequest):
         if not exists:
             if message:
                 return JSONResponse(status_code=400, content={
-                    "status": f"validation_failed",
+                    "status": "validation_failed",
                     "RefType": request.RefType,
                     "Ref": request.Ref,
                     "message": message
@@ -101,31 +157,41 @@ async def scan(request: ScanRequest):
             else:
                 raise ValueError(f"{request.RefType} '{request.Ref}' не найден в репозитории {request.RepoUrl}")
         
-        print(f"✅ Commit resolved {commit[0:6]}..")
+        print(f"✅ Commit resolved {commit[0:6]}.. для {request.ProjectName}")
 
+        # Add to queue for processing
+        await add_to_queue_background(request, commit)
+        
         response = JSONResponse(
             content={
                 "status": "accepted",
                 "RefType": request.RefType,
                 "Ref": request.Ref,
                 "commit": commit,
+                "queue_position": task_queue.qsize(),
                 "message": "Сканирование добавлено в очередь ✅"
             },
             status_code=200
         )
 
-        asyncio.create_task(add_to_queue_background(request, commit))
         return response
     
     except ValueError as e:
-        print("Запрос не принят - validation_failed")
+        print(f"❌ Запрос не принят - validation_failed: {e}")
         return JSONResponse(status_code=400, content={
-            "status": f"validation_failed",
+            "status": "validation_failed",
             "RefType": request.RefType,
             "Ref": request.Ref,
             "message": str(e)
         })
-
+    except Exception as e:
+        print(f"❌ Неожиданная ошибка: {e}")
+        return JSONResponse(status_code=500, content={
+            "status": "error",
+            "RefType": request.RefType,
+            "Ref": request.Ref,
+            "message": "Внутренняя ошибка сервера"
+        })
 
 ###########################
 # Rules.yml ###############
@@ -191,12 +257,11 @@ async def update_rules_file(content: str):
         "size": size
     }
 
-
 ###########################
 # excluded_files.yml ######
 ###########################
 @app.get("/excluded-files-info")
-async def rules_info():
+async def excluded_files_info():
     if os.path.exists(EXCLUDED_FILES_PATH):
         stat = os.stat(EXCLUDED_FILES_PATH)
         return {
@@ -213,7 +278,7 @@ async def rules_info():
     }
 
 @app.get("/get-excluded-files")
-async def get_rules():
+async def get_excluded_files():
     try:
         if not os.path.exists(EXCLUDED_FILES_PATH):
             return JSONResponse(status_code=404, content={"status": "failed", "message": "Файл не найден"})
@@ -255,12 +320,11 @@ async def do_update_excluded_files(content: str):
         "size": size
     }
 
-
 ###########################
 # excluded_extensions.yml #
 ###########################
 @app.get("/excluded-extensions-info")
-async def rules_info():
+async def excluded_extensions_info():
     if os.path.exists(EXCLUDED_EXTENSIONS_PATH):
         stat = os.stat(EXCLUDED_EXTENSIONS_PATH)
         return {
@@ -277,7 +341,7 @@ async def rules_info():
     }
 
 @app.get("/get-excluded-extensions")
-async def get_rules():
+async def get_excluded_extensions():
     try:
         if not os.path.exists(EXCLUDED_EXTENSIONS_PATH):
             return JSONResponse(status_code=404, content={"status": "failed", "message": "Файл не найден"})
@@ -318,3 +382,5 @@ async def do_update_excluded_extensions(content: str):
         "filename": EXCLUDED_EXTENSIONS_PATH,
         "size": size
     }
+
+# Remove custom signal handlers - let uvicorn handle them

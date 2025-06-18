@@ -2,19 +2,14 @@ import os
 import time
 import joblib
 import random
-import threading
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 
 class SecretClassifier:
     _instance = None
-    _lock = threading.Lock()
     model = None
     vectorizer = None
-    _executor = None
 
     MODEL_PATH = "Model/secret_detector_model.pkl"
     VECTORIZER_PATH = "Model/vectorizer.pkl"
@@ -23,16 +18,9 @@ class SecretClassifier:
 
     def __new__(cls):
         if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-                    cls._instance._initialize()
+            cls._instance = super().__new__(cls)
+            cls._instance._load_or_train_model()
         return cls._instance
-
-    def _initialize(self):
-        self._load_or_train_model()
-        # Создаем пул потоков для выполнения ML операций
-        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="MLWorker")
 
     def _load_or_train_model(self):
         start_time = time.time()
@@ -47,6 +35,7 @@ class SecretClassifier:
             print(f"✅ Модель обучена и сохранена за {(time.time() - start_time):.2f} сек.")
 
     def _train_model(self):
+        """Обучение модели"""
         with open(self.SECRETS_DATASET, "r", encoding="utf-8") as f:
             secrets = f.read().splitlines()
 
@@ -68,55 +57,73 @@ class SecretClassifier:
         self.model = LogisticRegression(max_iter=1000)
         self.model.fit(X_train_vec, y_train)
 
+        # Ensure directories exist
+        os.makedirs(os.path.dirname(self.MODEL_PATH), exist_ok=True)
+        
         joblib.dump(self.model, self.MODEL_PATH)
         joblib.dump(self.vectorizer, self.VECTORIZER_PATH)
 
-    def _filter_secrets_sync(self, secrets: list[dict]) -> list[dict]:
-        """
-        Синхронная версия filter_secrets для выполнения в отдельном потоке.
-        Sklearn модели thread-safe для предсказания.
-        """
-        texts = [item.get("secret", "") for item in secrets]
-        
-        X_vec = self.vectorizer.transform(texts)
-        preds = self.model.predict(X_vec)
-        probs = self.model.predict_proba(X_vec)
-
-        for item, pred, proba in zip(secrets, preds, probs):
-            if not item["severity"]:
-                confidence = proba[pred]
-                if pred == 1:
-                    item["severity"] = "High"
-                else:
-                    if confidence > 0.80:
-                        item["severity"] = "Potential"
-                    else:
-                        item["severity"] = "High"
-
-        return secrets
-
     def filter_secrets(self, secrets: list[dict]) -> list[dict]:
         """
-        Синхронная версия - возвращает результат напрямую.
-        Используется в executor для неблокирующего выполнения.
+        Классифицирует каждый элемент словаря в списке secrets по полю "secret".
+        Заполняет поле "severity":
+        - "High" для уверенных секретов и неуверенных
+        - "Potential" для не секретов с высокой уверенностью
+        
+        Возвращает список словарей с обновленным полем "severity".
         """
-        result = self._filter_secrets_sync(secrets)
-        print(f"✅ Классификация {len(secrets)} секретов завершена")
-        return result
+        if not secrets:
+            return secrets
+            
+        # Извлекаем строки для предсказания
+        texts = [item.get("secret", "") for item in secrets]
+        
+        if not texts:
+            return secrets
 
-    async def filter_secrets_async(self, secrets: list[dict]) -> list[dict]:
-        """
-        Асинхронная версия filter_secrets.
-        Выполняет ML операции в отдельном потоке.
-        """
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(self._executor, self._filter_secrets_sync, secrets)
+        try:
+            X_vec = self.vectorizer.transform(texts)
+            preds = self.model.predict(X_vec)
+            probs = self.model.predict_proba(X_vec)
 
-    def shutdown(self):
-        """Закрываем пул потоков при завершении работы"""
-        if self._executor:
-            self._executor.shutdown(wait=True)
+            for item, pred, proba in zip(secrets, preds, probs):
+                if not item.get("severity"):  # Only update if not already set
+                    confidence = proba[pred]
+                    if pred == 1:
+                        # Уверен что секрет
+                        item["severity"] = "High"
+                    else:
+                        if confidence > 0.80:
+                            # Уверен что не секрет
+                            item["severity"] = "Potential"
+                        else:
+                            # Не уверен
+                            item["severity"] = "High"
+        except Exception as e:
+            print(f"❌ Ошибка классификации: {e}")
+            # Fallback: mark all as High severity
+            for item in secrets:
+                if not item.get("severity"):
+                    item["severity"] = "High"
 
-# Для использования в FastAPI
+        print(f"✅ Классификация завершена для {len(secrets)} элементов")
+        return secrets
+
+# Глобальная функция для использования в FastAPI
 def get_model_instance():
+    """Получить экземпляр модели (thread-safe)"""
     return SecretClassifier()
+
+# Функция для использования в отдельных процессах
+def filter_secrets_in_process(secrets_list: list[dict]) -> list[dict]:
+    """Функция для фильтрации секретов в отдельном процессе"""
+    try:
+        classifier = SecretClassifier()
+        return classifier.filter_secrets(secrets_list)
+    except Exception as e:
+        print(f"❌ Ошибка в процессе классификации: {e}")
+        # Fallback: mark all as High severity
+        for item in secrets_list:
+            if not item.get("severity"):
+                item["severity"] = "High"
+        return secrets_list
