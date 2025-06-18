@@ -141,7 +141,6 @@ def safe_extract(zip_file, extract_path):
         with zip_file.open(member) as source, open(full_path, "wb") as target:
             target.write(source.read())
 
-
 async def download_repo_azure(repo_url, commit_id, extract_path):
     os.makedirs(extract_path, exist_ok=True)
 
@@ -230,62 +229,95 @@ async def download_github_repo(repo_url, commit_id, extract_path):
         return "", return_string
 
 async def check_ref_and_resolve_azure(repo_url: str, ref_type: str, ref: str):
+    """
+    Проверка существования ветки, тега или коммита в Azure DevOps и получение commit hash.
+
+    Args:
+        repo_url: URL Azure DevOps репозитория
+        ref_type: "branch", "tag" или "commit"
+        ref: имя ветки/тега или хэш коммита
+
+    Returns:
+        (существует: bool, хэш_коммита: Optional[str], сообщение: str)
+    """
     message = ""
+
     for auth_method in auth_methods:
         auth = get_auth(auth_method)
         print(f"Try to resolve {repo_url} --> {ref_type}. auth_method={auth_method}")
-        """
-        Проверка существования ветки, тега или коммита в Azure DevOps и получение commit hash.
-        
-        Args:
-            repo_url: URL Azure DevOps репозитория
-            ref_type: "branch", "tag" или "commit"
-            ref: имя ветки/тега или хэш коммита
-            auth: объект авторизации, возвращаемый get_auth()
-            
-        Returns:
-            (существует: bool, хэш_коммита: Optional[str])
-        """
+
         try:
             server, collection, project, repository = parse_azure_devops_url(repo_url)
-
             base_api_url = f"https://{server}/{collection}/{project}/_apis/git/repositories/{repository}"
-            api_version = "5.1-preview.1"
 
             if ref_type.lower() == "branch":
-                url = f"{base_api_url}/refs?filter=heads/{ref}&api-version={api_version}"
-            elif ref_type.lower() == "tag":
-                url = f"{base_api_url}/refs?filter=tags/{ref}&api-version={api_version}"
-            elif ref_type.lower() == "commit":
-                url = f"{base_api_url}/commits/{ref}?api-version={api_version}"
-            else:
-                raise ValueError(f"❌ Неверный тип ref: {ref_type}")
-
-            response = requests.get(url, auth=auth, verify=False, timeout=20)
-            if response.status_code not in [200, 201, 202, 203]:
-                if response.status_code in [401, 403]:
-                    message = f"Access Denied: [{response.status_code}]. Проверьте, что у PAT-токена/NTLM Auth есть доступ к репозиторию."
-                else:
-                    message = f"Запрос к репозиторию выдал {response.status_code} код. Возможно неверные креды или нет доступа к репозиторию"
-                continue
-            message = ""
-            data = response.json()
-            if ref_type.lower() in ("branch", "tag"):
+                url = f"{base_api_url}/refs?filter=heads/{ref}&api-version=5.1-preview.1"
+                response = requests.get(url, auth=auth, verify=False, timeout=20)
+                if response.status_code not in [200, 201, 202, 203]:
+                    if response.status_code in [401, 403]:
+                        message = f"Access Denied: [{response.status_code}]. Проверьте, что у PAT-токена/NTLM Auth есть доступ к репозиторию."
+                    else:
+                        message = f"Запрос к репозиторию выдал {response.status_code} код. Возможно неверные креды или нет доступа к репозиторию"
+                    continue
+                message = ""
+                data = response.json()
                 if data.get("count", 0) == 0:
-                    return False, None, message
-                commit_hash = data["value"][0].get("peeledObjectId", data["value"][0]["objectId"])
-                return True, commit_hash, message
+                    return False, None, "Ветка не найдена"
+                commit_hash = data["value"][0]["objectId"]
+                return True, commit_hash, ""
+
+            elif ref_type.lower() == "tag":
+                # Сначала получаем objectId тега
+                url = f"{base_api_url}/refs?filter=tags/{ref}&api-version=5.1-preview.1"
+                response = requests.get(url, auth=auth, verify=False, timeout=20)
+                if response.status_code not in [200, 201, 202, 203]:
+                    if response.status_code in [401, 403]:
+                        message = f"Access Denied: [{response.status_code}]. Проверьте, что у PAT-токена/NTLM Auth есть доступ к репозиторию."
+                    else:
+                        message = f"Запрос к репозиторию выдал {response.status_code} код. Возможно неверные креды или нет доступа к репозиторию"
+                    continue
+                message = ""
+                data = response.json()
+                if data.get("count", 0) == 0:
+                    return False, None, "Тег не найден"
+
+                tag_object_id = data["value"][0]["objectId"]
+
+                # Пробуем получить аннотированный тег
+                tag_url = f"{base_api_url}/annotatedtags/{tag_object_id}?api-version=6.1-preview"
+                tag_response = requests.get(tag_url, auth=auth, verify=False, timeout=20)
+
+                if tag_response.status_code == 200:
+                    tag_data = tag_response.json()
+                    tagged_object = tag_data.get("taggedObject", {})
+                    if tagged_object.get("objectType") == "commit":
+                        return True, tagged_object["objectId"], ""
+                    else:
+                        return True, tag_object_id, "Не commit-объект, но тег найден"
+                else:
+                    # fallback если не удалось получить annotated tag
+                    return True, tag_object_id, "Не удалось получить аннотированный тег, возвращён objectId"
+
             elif ref_type.lower() == "commit":
-                commit_hash = data.get("commitId")
-                if commit_hash:
-                    return True, commit_hash, message
-                return False, None, message
-            
+                url = f"{base_api_url}/commits/{ref}?api-version=5.1-preview.1"
+                response = requests.get(url, auth=auth, verify=False, timeout=20)
+                if response.status_code == 200:
+                    data = response.json()
+                    commit_id = data.get("commitId")
+                    if commit_id:
+                        return True, commit_id, ""
+                    return False, None, "Коммит не найден"
+                else:
+                    message = ""
+                    continue
+            else:
+                return False, None, f"❌ Неверный тип ref: {ref_type}"
+
         except Exception as e:
-            print(f"❌ Ошибка при проверке Azure DevOps ссылки: {e}")
             message = f"Ошибка при проверке Azure DevOps ссылки: {e}"
+            print(f"❌ {message}")
             return False, None, message
-    
+
     return False, None, message
 
 async def check_ref_and_resolve_git(repo_url: str, ref_type: str, ref: str):
