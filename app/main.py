@@ -210,7 +210,8 @@ async def multi_scan(request: MultiScanRequest):
             content={
                 "status": "accepted",
                 "message": "Мультисканирование добавлено в очередь ✅",
-                "data": [item.dict() for item in response_data]
+                "data": [item.dict() for item in response_data],
+                "RepoUrl": repo.RepoUrl
             },
             status_code=200
         )
