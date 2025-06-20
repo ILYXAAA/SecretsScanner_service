@@ -44,6 +44,25 @@ def decrypt_from_file(filename: str, key_name: str) -> str:
     decrypted = fernet.decrypt(encrypted)
     return decrypted.decode()
 
+def configure_first_setup():
+    print("Мастер первичной настройки login, password, pat")
+    print("Убедитесь что запускаетесь из main директории (python app/secure_save.py)")
+    print("="*20)
+    filename = "Settings/login.dat"
+    key_name = "LOGIN_KEY"
+    message = input("Введите логин (NTLM Auth):")
+    encrypt_and_save(text=message, filename=filename, key_name=key_name)
+
+    filename = "Settings/password.dat"
+    key_name = "PASSWORD_KEY"
+    message = input("Введите пароль (NTLM Auth):")
+    encrypt_and_save(text=message, filename=filename, key_name=key_name)
+
+    filename = "Settings/pat_token.dat"
+    key_name = "PAT_KEY"
+    message = input("Введите PAT токен:")
+    encrypt_and_save(text=message, filename=filename, key_name=key_name)
+
 if __name__ == "__main__":
     print("Мастер первичной настройки login, password, pat")
     print("Убедитесь что запускаетесь из main директории (python app/secure_save.py)")

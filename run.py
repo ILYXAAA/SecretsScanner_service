@@ -12,6 +12,7 @@ import multiprocessing
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
+os.system("") # Для цветной консоли
 
 # Configure colored logging
 class ColoredFormatter(logging.Formatter):
@@ -30,6 +31,43 @@ class ColoredFormatter(logging.Formatter):
         log_color = self.COLORS.get(record.levelname, self.COLORS['RESET'])
         record.levelname = f"{log_color}{record.levelname}{self.COLORS['RESET']}"
         return super().format(record)
+
+def create_env_file():
+    """Create .env file from template and run first-time setup"""
+    example_file = Path('.env.example')
+    if not example_file.exists():
+        logging.error(".env.example file not found")
+        return False
+    
+    # Copy example to .env
+    with open(example_file, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    with open('.env', 'w', encoding='utf-8') as f:
+        f.write(content)
+    
+    print("\nFirst-time setup detected - running configuration wizard...")
+    
+    # Run first-time setup from secure_save.py
+    try:
+        import sys
+        sys.path.append('app')
+        from secure_save import configure_first_setup
+        
+        if configure_first_setup():
+            logging.info("First-time setup completed successfully")
+            return True
+        else:
+            logging.error("First-time setup failed")
+            return False
+            
+    except ImportError:
+        logging.error("Could not import configure_first_setup from app/secure_save.py")
+        logging.info("Please run: python app/secure_save.py manually")
+        return False
+    except Exception as e:
+        logging.error(f"Error during first-time setup: {e}")
+        return False
 
 def setup_logging():
     """Setup colored logging"""
@@ -66,8 +104,10 @@ def validate_environment():
         load_dotenv()
         logging.info(".env configuration file found and loaded")
     else:
-        logging.warning(".env file not found. Using default configuration")
-        logging.info("You can copy .env.example to .env for custom configuration")
+        logging.warning(".env file not found. Creating from template...")
+        create_env_file()
+        load_dotenv()
+        logging.info(".env file created - configuration required")
     
     # Create required directories
     required_dirs = [
