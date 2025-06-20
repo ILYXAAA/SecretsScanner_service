@@ -10,6 +10,9 @@ Settings/login.dat
 Settings/password.dat
 Settings/pat_token.dat
 test.py
+test_2.py
+run_copy.py
+test.txt
 
 # C extensions
 *.so

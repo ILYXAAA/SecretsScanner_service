@@ -1,143 +1,281 @@
 #!/usr/bin/env python3
 """
-FastAPI application runner script with startup checks
+Production startup script for Secret Scanner Service
+Supports graceful shutdown and proper resource management
 """
 
+import uvicorn
 import os
 import sys
+import signal
+import multiprocessing
+import logging
 from pathlib import Path
 from dotenv import load_dotenv
 
-def check_files():
-    """Check if required files exist"""
-    required_files = {
-        'app/main.py': 'Main FastAPI application',
-        'app/model_loader.py': 'Model loader',
-        'app/models.py': 'Pydantic models',
-        'app/queue_worker.py': 'Queue workers',
-        'app/repo_utils.py': 'Utils for repo interactions',
-        'app/scanner.py': 'Scanning utils',
-        'app/secure_save.py': 'Saving/Reading Auth data',
-        'requirements.txt': 'Python dependencies',
-        '.env': 'Environment settings file',
-        'Datasets/Dataset_NonSecrets.txt': 'Dataset for FalsePositive secrets',
-        'Datasets/Dataset_Secrets.txt': 'Dataset for True secrets'
+# Configure colored logging
+class ColoredFormatter(logging.Formatter):
+    """Colored log formatter"""
+    
+    COLORS = {
+        'DEBUG': '\033[36m',    # Cyan
+        'INFO': '\033[32m',     # Green
+        'WARNING': '\033[33m',  # Yellow
+        'ERROR': '\033[31m',    # Red
+        'CRITICAL': '\033[35m', # Magenta
+        'RESET': '\033[0m'      # Reset
     }
     
-    missing_files = []
-    for file, description in required_files.items():
-        if not Path(file).exists():
-            missing_files.append(f"{file} ({description})")
-        else:
-            print(f"✅ {file} found")
-    
-    if missing_files:
-        print("\n❌ Missing required files:")
-        for file in missing_files:
-            print(f"  - {file}")
-        return False
-    
-    return True
+    def format(self, record):
+        log_color = self.COLORS.get(record.levelname, self.COLORS['RESET'])
+        record.levelname = f"{log_color}{record.levelname}{self.COLORS['RESET']}"
+        return super().format(record)
 
-def check_env_config():
-    """Check environment configuration"""
-    load_dotenv()
+def setup_logging():
+    """Setup colored logging"""
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
     
-    # Check if .env file exists
-    if not Path('.env').exists():
-        print("⚠️  .env file not found. Using default configuration.")
-        print("   Create a .env file for custom configuration")
+    # Remove existing handlers
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    
+    # Create console handler with colored formatter
+    console_handler = logging.StreamHandler()
+    formatter = ColoredFormatter(fmt='[%(levelname)s] %(message)s')
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    return logger
+
+def setup_multiprocessing():
+    """Configure multiprocessing for Windows/Linux compatibility"""
+    if sys.platform.startswith('win'):
+        multiprocessing.set_start_method('spawn', force=True)
     else:
-        print("✅ .env configuration file found")
-    
-    # Check required environment variables
-    required_vars = {
-        "HubType": "Repository hub type",
-        "HOST": "Application host",
-        "PORT": "Application port",
-        "LOGIN_KEY": "Ключ для шифрования Логина",
-        "PASSWORD_KEY": "Ключ для шифрования Пароля",
-        "PAT_KEY": "Ключ для шифрования PAT токена"
-    }
-    
-    missing_vars = []
-    for var, description in required_vars.items():
-        value = os.getenv(var)
-        if not value:
-            missing_vars.append(f"{var} ({description})")
-        else:
-            print(f"✅ {var} configured")
-    
-    if missing_vars:
-        print("\n❌ Missing required environment variables:")
-        for var in missing_vars:
-            if var in ["LOGIN_KEY", "PASSWORD_KEY", "PAT_KEY"]:
-                print(f"  - {var} - запустите secure_save.py (мастер настройки Auth данных)")
-            else:
-                print(f"  - {var}")
-        return False
-    
-    return True
+        try:
+            multiprocessing.set_start_method('fork', force=True)
+        except RuntimeError:
+            pass
 
-def check_directories():
-    """Check if required directories exist"""
-    required_dirs = ['Settings', 'app', 'Datasets']
+def validate_environment():
+    """Validate required environment variables and files"""
+    # Load environment variables
+    env_file = Path('.env')
+    if env_file.exists():
+        load_dotenv()
+        logging.info(".env configuration file found and loaded")
+    else:
+        logging.warning(".env file not found. Using default configuration")
+        logging.info("You can copy .env.example to .env for custom configuration")
+    
+    # Create required directories
+    required_dirs = [
+        "Settings",
+        "Model", 
+        "Datasets",
+        "tmp"
+    ]
     
     for dir_name in required_dirs:
-        if not Path(dir_name).exists():
-            print(f"❌ Missing required directory: {dir_name}")
-            return False
+        dir_path = Path(dir_name)
+        if not dir_path.exists():
+            logging.info(f"Creating directory: {dir_name}")
+            dir_path.mkdir(parents=True, exist_ok=True)
         else:
-            print(f"✅ Directory {dir_name} found")
+            logging.info(f"Directory '{dir_name}' found")
+    
+    # Check dataset files
+    secrets_dataset = os.getenv("SECRETS_DATASET", "Datasets/Dataset_Secrets.txt")
+    non_secrets_dataset = os.getenv("NOT_SECRETS_DATASET", "Datasets/Dataset_NonSecrets.txt")
+    
+    if not Path(secrets_dataset).exists():
+        logging.warning(f"Dataset file {secrets_dataset} not found")
+        logging.info("Create file with secret examples for model training")
+    else:
+        logging.info(f"Secrets dataset found: {secrets_dataset}")
+    
+    if not Path(non_secrets_dataset).exists():
+        logging.warning(f"Dataset file {non_secrets_dataset} not found")
+        logging.info("Create file with non-secret examples for model training")
+    else:
+        logging.info(f"Non-secrets dataset found: {non_secrets_dataset}")
+    
+    # Check configuration files
+    config_files = {
+        "RULES_FILE": "Settings/rules.yml",
+        "EXCLUDED_FILES_PATH": "Settings/excluded_files.yml",
+        "EXCLUDED_EXTENSIONS_PATH": "Settings/excluded_extensions.yml"
+    }
+    
+    for env_var, default_path in config_files.items():
+        file_path = os.getenv(env_var, default_path)
+        if not Path(file_path).exists():
+            logging.warning(f"Configuration file {file_path} not found")
+        else:
+            logging.info(f"Configuration file found: {file_path}")
+    
+    # Check authentication files
+    auth_files = {
+        "LOGIN_FILE": "Settings/login.dat",
+        "PASSWORD_FILE": "Settings/password.dat", 
+        "PAT_TOKEN_FILE": "Settings/pat_token.dat"
+    }
+    
+    missing_auth = []
+    for env_var, default_path in auth_files.items():
+        file_path = os.getenv(env_var, default_path)
+        if not Path(file_path).exists():
+            missing_auth.append(file_path)
+        else:
+            logging.info(f"Authentication file found: {file_path}")
+    
+    if missing_auth:
+        logging.error("Missing authentication files:")
+        for file in missing_auth:
+            logging.error(f"  - {file}")
+        logging.info("To configure authentication:")
+        logging.info("   Run: python app/secure_save.py")
+        return False
+    
+    # Check required environment variables
+    required_env_vars = ["LOGIN_KEY", "PASSWORD_KEY", "PAT_KEY"]
+    missing_vars = []
+    
+    for var in required_env_vars:
+        value = os.getenv(var)
+        if not value or value == "***":
+            missing_vars.append(var)
+        else:
+            logging.info(f"{var} is configured")
+    
+    if missing_vars:
+        logging.error("Missing required environment variables:")
+        for var in missing_vars:
+            logging.error(f"  - {var}")
+        logging.info("Configure these variables in .env file or run app/secure_save.py")
+        return False
+    
+    logging.info("Environment validation completed successfully")
+    return True
+
+def check_dependencies():
+    """Check if required Python packages are installed"""
+    try:
+        import uvicorn
+        logging.info("uvicorn is installed")
+    except ImportError:
+        logging.error("uvicorn is not installed")
+        return False
+    
+    try:
+        import fastapi
+        logging.info("fastapi is installed")
+    except ImportError:
+        logging.error("fastapi is not installed")
+        return False
     
     return True
 
+def get_server_config():
+    """Get server configuration from environment"""
+    host = os.getenv("HOST", "127.0.0.1")
+    port = int(os.getenv("PORT", "8001"))
+    workers = int(os.getenv("MAX_WORKERS", "10"))
+    log_level = os.getenv("LOG_LEVEL", "info").lower()
+    
+    return {
+        "host": host,
+        "port": port,
+        "log_level": log_level,
+        "access_log": True,
+        "use_colors": True,
+        "loop": "asyncio"
+    }
+
+def setup_signal_handlers():
+    """Setup graceful shutdown signal handlers"""
+    def signal_handler(signum, frame):
+        print(f"\nReceived signal {signum} ({signal.Signals(signum).name})")
+        print("Initiating graceful shutdown...")
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
+    signal.signal(signal.SIGTERM, signal_handler)  # Termination request
+    
+    if hasattr(signal, 'SIGHUP'):  # Unix only
+        signal.signal(signal.SIGHUP, signal_handler)  # Hangup
+
+def print_startup_info():
+    """Print startup information"""
+    config = get_server_config()
+    max_workers = os.getenv("MAX_WORKERS", "10")
+    hub_type = os.getenv("HubType", "Azure")
+    temp_dir = os.getenv("TEMP_DIR", "C:\\")
+    
+    print("\n" + "=" * 60)
+    print("SECRET SCANNER SERVICE")
+    print("=" * 60)
+    print(f"Server: http://{config['host']}:{config['port']}")
+    print(f"Hub Type: {hub_type.upper()}")
+    print(f"Max Workers: {max_workers}")
+    print(f"Log Level: {config['log_level'].upper()}")
+    print(f"Temp Directory: {temp_dir}")
+    print(f"Platform: {sys.platform}")
+    print(f"Python: {sys.version.split()[0]}")
+    print(f"CPU Count: {multiprocessing.cpu_count()}")
+    print("=" * 60)
+
 def main():
-    print("🚀 FastAPI Application Startup")
+    """Main startup function"""
+    # Setup logging first
+    logger = setup_logging()
+    
+    print("Secret Scanner Service Startup")
     print("=" * 40)
     
-    # Load environment variables
-    load_dotenv()
-    
-    # Check required files
-    if not check_files():
-        print("\n❌ Please ensure all required files are present before starting.")
-        sys.exit(1)
-    
-    # Check directories
-    if not check_directories():
-        print("\n❌ Please ensure all required directories are present before starting.")
-        sys.exit(1)
-    
-    # Check environment configuration
-    if not check_env_config():
-        print("\n❌ Please configure environment variables before starting.")
-        sys.exit(1)
-    
-    print("\n✅ All checks passed!")
-    
-    # Get configuration from environment
-    host = os.getenv('HOST', '127.0.0.1')
-    port = int(os.getenv('PORT', '8001'))
-    hub_type = os.getenv('HubType', 'Azure')
-    
-    print(f"\n🌐 Starting FastAPI application...")
-    print(f"📍 Application will be available at: http://{host}:{port}")
-    print(f"🔧 Repository hub type: {hub_type}")
-    print(f"📊 Health check: http://{host}:{port}/health")
-    print("\n" + "=" * 40)
-    
-    # Start the application
     try:
-        import uvicorn
-        uvicorn.run("app.main:app", host=host, port=port, log_level="info")
+        # Check dependencies
+        print("\nChecking Python dependencies...")
+        if not check_dependencies():
+            logging.error("Required dependencies not installed")
+            logging.info("Please run: pip install -r requirements.txt")
+            sys.exit(1)
+        
+        # Setup multiprocessing
+        setup_multiprocessing()
+        
+        # Validate environment
+        print("\nValidating environment...")
+        if not validate_environment():
+            logging.error("Environment validation failed")
+            logging.info("Please complete the configuration steps shown above")
+            sys.exit(1)
+        
+        # Print startup info
+        print_startup_info()
+        
+        # Setup signal handlers
+        setup_signal_handlers()
+        
+        # Get server configuration
+        config = get_server_config()
+        
+        # Start the server
+        print("\nStarting HTTP server...")
+        uvicorn.run("app.main:app", **config)
+        
+    except KeyboardInterrupt:
+        print("\nReceived interrupt signal")
     except ImportError as e:
-        print(f"❌ Required dependencies not installed: {e}")
-        print("Please run: pip install -r requirements.txt")
+        logging.error(f"Import error: {e}")
+        logging.info("Please run: pip install -r requirements.txt")
         sys.exit(1)
     except Exception as e:
-        print(f"❌ Error starting application: {e}")
+        logging.error(f"Critical startup error: {e}")
         sys.exit(1)
+    finally:
+        print("Service stopped")
 
 if __name__ == "__main__":
     main()
