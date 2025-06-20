@@ -46,7 +46,7 @@ def check_false_positive(secret, context, FALSE_POSITIVE_RULES):
     context_lower = context.lower()
     return any(pattern.lower() in context_lower for pattern in FALSE_POSITIVE_RULES)
 
-async def _analyze_file(file_path, rules, target_dir, max_secrets=100, max_line_length=7000, FALSE_POSITIVE_RULES):
+async def _analyze_file(file_path, rules, target_dir, max_secrets=100, max_line_length=7000, FALSE_POSITIVE_RULES=[]):
     """Асинхронная функция для анализа файла с ограничениями"""
     results = []
     secrets_found = 0
