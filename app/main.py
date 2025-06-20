@@ -293,43 +293,59 @@ async def scan(request: ScanRequest):
 
 @app.post("/local_scan")
 async def local_scan(
-    project_name: str = Form(...),
-    repo_url: str = Form(...),
-    callback_url: str = Form(...),
+    ProjectName: str = Form(...),      # Изменено с project_name
+    RepoUrl: str = Form(...),          # Изменено с repo_url  
+    CallbackUrl: str = Form(...),      # Изменено с callback_url
+    RefType: str = Form(...), 
+    Ref: str = Form(...), 
     zip_file: UploadFile = File(...)
 ):
     """Process uploaded zip file locally"""
     
-    # Check queue capacity
-    if task_queue.qsize() >= MAX_WORKERS * 2:
-        return JSONResponse(status_code=429, content={
-            "status": "queue_full",
-            "message": f"Очередь переполнена ({task_queue.qsize()} задач). Попробуйте позже."
-        })
-
     try:
+        print(f"📥 Получен запрос на локальное сканирование: {ProjectName}")
+        # print(f"  - RepoUrl: {RepoUrl}")
+        # print(f"  - CallbackUrl: {CallbackUrl}")
+        # print(f"  - zip_file.filename: {zip_file.filename}")
+        # print(f"  - zip_file.content_type: {zip_file.content_type}")
+        
+        # Check queue capacity
+        if task_queue.qsize() >= MAX_WORKERS * 2:
+            return JSONResponse(status_code=429, content={
+                "status": "queue_full",
+                "message": f"Очередь переполнена ({task_queue.qsize()} задач). Попробуйте позже."
+            })
+
         # Validate file type
         if not zip_file.filename.endswith('.zip'):
+            print(f"❌ Неверный тип файла: {zip_file.filename}")
             return JSONResponse(status_code=400, content={
                 "status": "validation_failed",
                 "message": "Файл должен быть в формате ZIP"
             })
 
+        # Read file content immediately before putting in queue
+        print("📖 Читаю содержимое ZIP файла...")
+        zip_content = await zip_file.read()
+        print(f"✅ Прочитано {len(zip_content)} байт")
+        
         # Create request object
         request_dict = {
-            "ProjectName": project_name,
-            "RepoUrl": repo_url,
-            "CallbackUrl": callback_url
+            "ProjectName": ProjectName,
+            "RepoUrl": RepoUrl,
+            "RefType": RefType,
+            "Ref": Ref,
+            "CallbackUrl": CallbackUrl
         }
 
-        # Add to queue for processing
-        await task_queue.put(("local_scan", request_dict, zip_file))
-        print(f"📥 Локальное сканирование {project_name} поставлено в очередь")
+        # Add to queue with file content instead of file object
+        await task_queue.put(("local_scan", request_dict, zip_content))
+        print(f"📥 Локальное сканирование {ProjectName} поставлено в очередь")
         
         return JSONResponse(
             content={
                 "status": "accepted",
-                "ProjectName": project_name,
+                "ProjectName": ProjectName,
                 "queue_position": task_queue.qsize(),
                 "message": "Локальное сканирование добавлено в очередь ✅"
             },
@@ -338,10 +354,15 @@ async def local_scan(
     
     except Exception as e:
         print(f"❌ Ошибка при добавлении локального сканирования: {e}")
+        import traceback
+        traceback.print_exc()
         return JSONResponse(status_code=500, content={
             "status": "error",
-            "message": "Внутренняя ошибка сервера"
+            "message": f"Внутренняя ошибка сервера: {str(e)}"
         })
+
+
+
 
 ###########################
 # Rules.yml ###############

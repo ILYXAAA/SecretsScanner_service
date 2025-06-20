@@ -51,8 +51,8 @@ async def start_worker():
                     asyncio.create_task(process_multi_scan_sequence(multi_scan_items, commits))
                 elif item[0] == "local_scan":
                     # Local scan processing
-                    _, request_dict, zip_file = item
-                    asyncio.create_task(process_local_scan_async(request_dict, zip_file))
+                    _, request_dict, zip_content = item
+                    asyncio.create_task(process_local_scan_async(request_dict, zip_content))
             else:
                 # Single scan processing
                 request, commit = item
@@ -63,23 +63,21 @@ async def start_worker():
             print(f"❌ Worker error: {e}")
             await asyncio.sleep(1)
 
-async def process_local_scan_async(request_dict: dict, zip_file):
+async def process_local_scan_async(request_dict: dict, zip_content: bytes):
     """Process uploaded zip file locally"""
     temp_dir = tempfile.mkdtemp(dir=os.getenv("TEMP_DIR", "C:\\"))
     
     try:
         project_name = request_dict["ProjectName"]
         callback_url = request_dict["CallbackUrl"]
+        commit = request_dict["Ref"]
         
         print(f"🔄 Начинаю локальное сканирование {project_name}")
         
-        # Save uploaded file
+        # Save zip content to file
         zip_path = os.path.join(temp_dir, f"{project_name}.zip")
-        
-        # Read and save zip file content
-        content = await zip_file.read()
         with open(zip_path, 'wb') as f:
-            f.write(content)
+            f.write(zip_content)
         
         print(f"✅ ZIP файл сохранен: {project_name}")
         
@@ -116,7 +114,7 @@ async def process_local_scan_async(request_dict: dict, zip_file):
             "Message": "Scanned Successfully",
             "ProjectName": project_name,
             "ProjectRepoUrl": request_dict["RepoUrl"],
-            "RepoCommit": "local_upload",
+            "RepoCommit": commit,
             "Results": results,
             "FilesScanned": all_files_count
         }
