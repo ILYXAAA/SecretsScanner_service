@@ -70,7 +70,6 @@ def create_env_file():
         return False
 
 def setup_logging():
-    """Setup colored logging"""
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
     
@@ -78,11 +77,23 @@ def setup_logging():
     for handler in logger.handlers[:]:
         logger.removeHandler(handler)
     
-    # Create console handler with colored formatter
+    # Console handler
     console_handler = logging.StreamHandler()
     formatter = ColoredFormatter(fmt='[%(levelname)s] %(message)s')
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
+    
+    # File handler
+    from logging.handlers import RotatingFileHandler
+    file_handler = RotatingFileHandler(
+        'secrets_scanner_service.log', 
+        maxBytes=10*1024*1024, 
+        backupCount=5,
+        encoding='utf-8'
+    )
+    file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
     
     return logger
 

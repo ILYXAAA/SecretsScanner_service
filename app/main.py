@@ -6,11 +6,13 @@ from app.model_loader import get_model_instance
 from app.repo_utils import check_ref_and_resolve_git, check_ref_and_resolve_azure
 import asyncio
 import os
+import yaml
 import aiofiles
 from app.secure_save import encrypt_and_save, decrypt_from_file
 from dotenv import load_dotenv
 import logging
 from logging.handlers import RotatingFileHandler
+from contextlib import asynccontextmanager
 
 load_dotenv()
 os.system("") # Нужно для отображение цвета в консоли Windows
@@ -24,9 +26,64 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("main")
-
 HubType = os.getenv("HubType")
-app = FastAPI()
+
+# === Application Lifecycle ===
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    global worker_tasks
+    
+    logger.info(f"Запуск сервиса с {MAX_WORKERS} воркерами...")
+    
+    # Pre-load model in main process
+    try:
+        get_model_instance()
+        logger.info("Модель загружена в основном процессе")
+    except Exception as e:
+        logger.error(f"Ошибка загрузки модели: {e}")
+    
+    # Start concurrent workers
+    for i in range(MAX_WORKERS):
+        task = asyncio.create_task(start_worker())
+        worker_tasks.append(task)
+        logger.info(f"Воркер {i+1} запущен")
+    
+    logger.info(f"Сервис готов к обработке запросов")
+    
+    yield  # Приложение работает
+    
+    # Shutdown
+    logger.warning("Начинаю остановку сервиса...")
+    
+    try:
+        # Cancel all worker tasks
+        for task in worker_tasks:
+            if not task.done():
+                task.cancel()
+        
+        # Wait for tasks to complete with timeout
+        if worker_tasks:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*worker_tasks, return_exceptions=True),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                logger.error("Timeout при остановке воркеров")
+        
+        # Cleanup executors
+        try:
+            await cleanup_executors()
+        except Exception as e:
+            logger.error(f"Ошибка при очистке executors: {e}")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при shutdown: {e}")
+    finally:
+        logger.info("Сервис остановлен")
+
+app = FastAPI(lifespan=lifespan)
 
 # Configuration
 TOKEN_FILE = "Settings/pat_token.dat"
@@ -69,66 +126,8 @@ async def get_pat_token():
         return {"status": "failed", "message": f"Error: {str(error)}"}
     return {"status": "success", "token": masked}
 
-# === Application Lifecycle ===
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize model and start concurrent workers"""
-    global worker_tasks
-    
-    logger.info(f"Запуск сервиса с {MAX_WORKERS} воркерами...")
-    
-    # Pre-load model in main process
-    try:
-        get_model_instance()
-        logger.info("Модель загружена в основном процессе")
-    except Exception as e:
-        logger.error(f"Ошибка загрузки модели: {e}")
-    
-    # Start concurrent workers
-    for i in range(MAX_WORKERS):
-        task = asyncio.create_task(start_worker())
-        worker_tasks.append(task)
-        logger.info(f"Воркер {i+1} запущен")
-    
-    logger.info(f"Сервис готов к обработке запросов")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Graceful shutdown"""
-    global worker_tasks
-    
-    logger.warning("Начинаю остановку сервиса...")
-    
-    try:
-        # Cancel all worker tasks
-        for task in worker_tasks:
-            if not task.done():
-                task.cancel()
-        
-        # Wait for tasks to complete with timeout
-        if worker_tasks:
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*worker_tasks, return_exceptions=True),
-                    timeout=5.0
-                )
-            except asyncio.TimeoutError:
-                logger.error("Timeout при остановке воркеров")
-        
-        # Cleanup executors
-        try:
-            await cleanup_executors()
-        except Exception as e:
-            logger.error(f"Ошибка при очистке executors: {e}")
-        
-    except Exception as e:
-        logger.error(f"Ошибка при shutdown: {e}")
-    finally:
-        logger.info("Сервис остановлен")
 
 # === Health Check ===
-
 @app.get("/health")
 async def health():
     return {
@@ -140,7 +139,6 @@ async def health():
     }
 
 # === Multi-Scanning Endpoint ===
-
 @app.post("/multi_scan")
 async def multi_scan(request: MultiScanRequest):
     """Process multiple repositories sequentially"""
@@ -304,9 +302,9 @@ async def scan(request: ScanRequest):
 
 @app.post("/local_scan")
 async def local_scan(
-    ProjectName: str = Form(...),      # Изменено с project_name
-    RepoUrl: str = Form(...),          # Изменено с repo_url  
-    CallbackUrl: str = Form(...),      # Изменено с callback_url
+    ProjectName: str = Form(...),
+    RepoUrl: str = Form(...),
+    CallbackUrl: str = Form(...),
     RefType: str = Form(...), 
     Ref: str = Form(...), 
     zip_file: UploadFile = File(...)
@@ -374,6 +372,63 @@ async def local_scan(
 
 
 
+# Валидатор для yml, чтобы не сломать структуру файлов
+def validate_yaml_structure(content: str, file_type: str) -> tuple[bool, str]:
+    """Валидация YAML структуры для разных типов файлов"""
+    
+    try:
+        data = yaml.safe_load(content)
+        if data is None:
+            return False, "YAML файл пустой или содержит только комментарии"
+        
+        # Проверка структуры в зависимости от типа файла
+        if file_type == "rules":
+            if not isinstance(data, list):
+                return False, "Файл rules.yml должен содержать список правил"
+            for i, rule in enumerate(data):
+                if not isinstance(rule, dict):
+                    return False, f"Правило #{i+1} должно быть объектом"
+                required_fields = ['id', 'message', 'pattern', 'severity']
+                for field in required_fields:
+                    if field not in rule:
+                        return False, f"Правило #{i+1} должно содержать поле '{field}'"
+                    if not isinstance(rule[field], str):
+                        return False, f"Поле '{field}' в правиле #{i+1} должно быть строкой"
+                        
+        elif file_type == "excluded_files":
+            if not isinstance(data, dict) or 'excluded_files' not in data:
+                return False, "Файл должен содержать ключ 'excluded_files'"
+            excluded_files = data['excluded_files']
+            if not isinstance(excluded_files, list):
+                return False, f"Значение 'excluded_files' должно быть списком, получен {type(excluded_files).__name__}"
+                
+        elif file_type == "excluded_extensions":
+            if not isinstance(data, dict) or 'excluded_extensions' not in data:
+                return False, "Файл должен содержать ключ 'excluded_extensions'"
+            excluded_extensions = data['excluded_extensions']
+            if not isinstance(excluded_extensions, list):
+                return False, f"Значение 'excluded_extensions' должно быть списком, получен {type(excluded_extensions).__name__}"
+                
+        elif file_type == "false_positive":
+            if not isinstance(data, dict) or 'false_positive' not in data:
+                return False, "Файл должен содержать ключ 'false_positive'"
+            false_positive = data['false_positive']
+            if not isinstance(false_positive, list):
+                return False, f"Значение 'false_positive' должно быть списком, получен {type(false_positive).__name__}"
+                
+        return True, "Структура YAML корректна"
+        
+    except yaml.YAMLError as e:
+        # Упрощаем сообщение об ошибке YAML
+        error_msg = str(e)
+        if "expected <block end>" in error_msg:
+            return False, "Ошибка структуры YAML: неправильное форматирование списка или объекта"
+        elif "found unexpected" in error_msg:
+            return False, "Ошибка синтаксиса YAML: неожиданный символ"
+        else:
+            return False, f"Ошибка синтаксиса YAML: {error_msg}"
+    except Exception as e:
+        return False, f"Ошибка валидации: {str(e)}"
 
 ###########################
 # Rules.yml ###############
@@ -417,15 +472,27 @@ async def update_rules(data: RulesContent):
     try:
         info = await update_rules_file(data.content)
         return {"status": "success", **info}
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={
+            "status": "validation_failed", 
+            "message": str(e),
+            "filename": RULES_PATH,
+            "size": 0
+        })
     except Exception as e:
-        return {
+        return JSONResponse(status_code=500, content={
             "status": "failed",
             "message": f"Произошла ошибка: {e}",
             "filename": RULES_PATH,
             "size": 0
-        }
+        })
     
 async def update_rules_file(content: str):
+    # Валидация YAML
+    is_valid, error_msg = validate_yaml_structure(content, "rules")
+    if not is_valid:
+        raise ValueError(f"Некорректная структура rules.yml: {error_msg}")
+    
     # Заменяем \r\n и \r на \n (унифицированный формат)
     normalized_content = content.replace('\r\n', '\n').replace('\r', '\n')
 
@@ -481,15 +548,28 @@ async def update_excluded_files(data: RulesContent):
     try:
         info = await do_update_excluded_files(data.content)
         return {"status": "success", **info}
+    except ValueError as e:
+        # Специально обрабатываем ошибки валидации
+        return JSONResponse(status_code=400, content={
+            "status": "validation_failed",
+            "message": str(e),
+            "filename": EXCLUDED_FILES_PATH,
+            "size": 0
+        })
     except Exception as e:
-        return {
+        return JSONResponse(status_code=500, content={
             "status": "failed",
             "message": f"Произошла ошибка: {e}",
             "filename": EXCLUDED_FILES_PATH,
             "size": 0
-        }
+        })
     
 async def do_update_excluded_files(content: str):
+    # Валидация YAML
+    is_valid, error_msg = validate_yaml_structure(content, "excluded_files")
+    if not is_valid:
+        raise ValueError(f"Некорректная структура excluded_files.yml: {error_msg}")
+    
     normalized_content = content.replace('\r\n', '\n').replace('\r', '\n')
 
     async with aiofiles.open(EXCLUDED_FILES_PATH, 'w', encoding='utf-8') as out_file:
@@ -544,15 +624,27 @@ async def update_excluded_extensions(data: RulesContent):
     try:
         info = await do_update_excluded_extensions(data.content)
         return {"status": "success", **info}
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={
+            "status": "validation_failed",
+            "message": str(e), 
+            "filename": EXCLUDED_EXTENSIONS_PATH,
+            "size": 0
+        })
     except Exception as e:
-        return {
+        return JSONResponse(status_code=500, content={
             "status": "failed",
             "message": f"Произошла ошибка: {e}",
             "filename": EXCLUDED_EXTENSIONS_PATH,
             "size": 0
-        }
+        })
     
 async def do_update_excluded_extensions(content: str):
+    # Валидация YAML
+    is_valid, error_msg = validate_yaml_structure(content, "excluded_extensions")
+    if not is_valid:
+        raise ValueError(f"Некорректная структура excluded_extensions.yml: {error_msg}")
+    
     normalized_content = content.replace('\r\n', '\n').replace('\r', '\n')
 
     async with aiofiles.open(EXCLUDED_EXTENSIONS_PATH, 'w', encoding='utf-8') as out_file:
@@ -564,9 +656,6 @@ async def do_update_excluded_extensions(content: str):
         "filename": EXCLUDED_EXTENSIONS_PATH,
         "size": size
     }
-
-# Remove custom signal handlers - let uvicorn handle them
-
 
 
 ##########################################
@@ -611,16 +700,28 @@ async def update_fp_rules(data: RulesContent):
     try:
         info = await update_fp_rules_file(data.content)
         return {"status": "success", **info}
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={
+            "status": "validation_failed",
+            "message": str(e),
+            "filename": FP_FILE_PATH,
+            "size": 0
+        })
     except Exception as e:
-        return {
+        return JSONResponse(status_code=500, content={
             "status": "failed",
             "message": f"Произошла ошибка: {e}",
             "filename": FP_FILE_PATH,
             "size": 0
-        }
+        })
     
 async def update_fp_rules_file(content: str):
-    # Заменяем \r\n и \r на \n (унифицированный формат)
+    # Валидация YAML
+    is_valid, error_msg = validate_yaml_structure(content, "false_positive")
+    if not is_valid:
+        raise ValueError(f"Некорректная структура false-positive.yml: {error_msg}")
+    
+    # Заменяем \r\n и \r на \n
     normalized_content = content.replace('\r\n', '\n').replace('\r', '\n')
 
     async with aiofiles.open(FP_FILE_PATH, 'w', encoding='utf-8') as out_file:

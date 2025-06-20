@@ -83,18 +83,18 @@ def parse_azure_devops_url(repo_url):
     path_parts = parsed.path.strip("/").split("/")
 
     if '_git' not in path_parts:
-        raise ValueError("❌ URL не содержит '_git'")
+        raise ValueError("URL не содержит '_git'")
 
     git_index = path_parts.index('_git')
 
     if git_index + 1 >= len(path_parts):
-        raise ValueError("❌ URL некорректен: отсутствует имя репозитория после '_git'")
+        raise ValueError("URL некорректен: отсутствует имя репозитория после '_git'")
 
     repository = path_parts[git_index + 1]
 
     # Все части до _git — это путь: /Collection/.../Project
     if git_index < 1:
-        raise ValueError("❌ Недостаточно информации до '_git'")
+        raise ValueError("Недостаточно информации до '_git'")
 
     project = path_parts[git_index - 1]
     collection_parts = path_parts[:git_index - 1]
