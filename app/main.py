@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException, Form
 from fastapi.responses import JSONResponse
 from app.models import ScanRequest, PATTokenRequest, RulesContent, MultiScanRequest, MultiScanResponse, MultiScanResponseItem
 from app.queue_worker import task_queue, start_worker, add_to_queue_background, add_multi_scan_to_queue, cleanup_executors
@@ -13,6 +13,7 @@ import signal
 import sys
 
 load_dotenv()
+os.system("") # Нужно для отображение цвета в консоли Windows
 
 HubType = os.getenv("HubType")
 app = FastAPI()
@@ -287,6 +288,58 @@ async def scan(request: ScanRequest):
             "status": "error",
             "RefType": request.RefType,
             "Ref": request.Ref,
+            "message": "Внутренняя ошибка сервера"
+        })
+
+@app.post("/local_scan")
+async def local_scan(
+    project_name: str = Form(...),
+    repo_url: str = Form(...),
+    callback_url: str = Form(...),
+    zip_file: UploadFile = File(...)
+):
+    """Process uploaded zip file locally"""
+    
+    # Check queue capacity
+    if task_queue.qsize() >= MAX_WORKERS * 2:
+        return JSONResponse(status_code=429, content={
+            "status": "queue_full",
+            "message": f"Очередь переполнена ({task_queue.qsize()} задач). Попробуйте позже."
+        })
+
+    try:
+        # Validate file type
+        if not zip_file.filename.endswith('.zip'):
+            return JSONResponse(status_code=400, content={
+                "status": "validation_failed",
+                "message": "Файл должен быть в формате ZIP"
+            })
+
+        # Create request object
+        request_dict = {
+            "ProjectName": project_name,
+            "RepoUrl": repo_url,
+            "CallbackUrl": callback_url
+        }
+
+        # Add to queue for processing
+        await task_queue.put(("local_scan", request_dict, zip_file))
+        print(f"📥 Локальное сканирование {project_name} поставлено в очередь")
+        
+        return JSONResponse(
+            content={
+                "status": "accepted",
+                "ProjectName": project_name,
+                "queue_position": task_queue.qsize(),
+                "message": "Локальное сканирование добавлено в очередь ✅"
+            },
+            status_code=200
+        )
+    
+    except Exception as e:
+        print(f"❌ Ошибка при добавлении локального сканирования: {e}")
+        return JSONResponse(status_code=500, content={
+            "status": "error",
             "message": "Внутренняя ошибка сервера"
         })
 

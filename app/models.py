@@ -34,3 +34,8 @@ class MultiScanResponse(BaseModel):
     status: str
     message: str
     data: List[MultiScanResponseItem]
+
+class LocalScanRequest(BaseModel):
+    ProjectName: str
+    RepoUrl: str
+    CallbackUrl: str

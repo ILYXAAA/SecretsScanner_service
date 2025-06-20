@@ -14,6 +14,7 @@ import string
 import subprocess
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
+import zipfile
 
 # Load environment variables
 load_dotenv()
@@ -42,11 +43,16 @@ async def start_worker():
         try:
             item = await task_queue.get()
             
-            # Check if this is a multi-scan or single scan
-            if isinstance(item, tuple) and len(item) == 3 and item[0] == "multi_scan":
-                # Multi-scan processing
-                _, multi_scan_items, commits = item
-                asyncio.create_task(process_multi_scan_sequence(multi_scan_items, commits))
+            # Check item type
+            if isinstance(item, tuple) and len(item) == 3:
+                if item[0] == "multi_scan":
+                    # Multi-scan processing
+                    _, multi_scan_items, commits = item
+                    asyncio.create_task(process_multi_scan_sequence(multi_scan_items, commits))
+                elif item[0] == "local_scan":
+                    # Local scan processing
+                    _, request_dict, zip_file = item
+                    asyncio.create_task(process_local_scan_async(request_dict, zip_file))
             else:
                 # Single scan processing
                 request, commit = item
@@ -56,6 +62,85 @@ async def start_worker():
         except Exception as e:
             print(f"❌ Worker error: {e}")
             await asyncio.sleep(1)
+
+async def process_local_scan_async(request_dict: dict, zip_file):
+    """Process uploaded zip file locally"""
+    temp_dir = tempfile.mkdtemp(dir=os.getenv("TEMP_DIR", "C:\\"))
+    
+    try:
+        project_name = request_dict["ProjectName"]
+        callback_url = request_dict["CallbackUrl"]
+        
+        print(f"🔄 Начинаю локальное сканирование {project_name}")
+        
+        # Save uploaded file
+        zip_path = os.path.join(temp_dir, f"{project_name}.zip")
+        
+        # Read and save zip file content
+        content = await zip_file.read()
+        with open(zip_path, 'wb') as f:
+            f.write(content)
+        
+        print(f"✅ ZIP файл сохранен: {project_name}")
+        
+        # Extract zip file
+        extracted_path = os.path.join(temp_dir, "extracted")
+        os.makedirs(extracted_path, exist_ok=True)
+        
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            download_executor,
+            extract_zip_file,
+            zip_path,
+            extracted_path
+        )
+        
+        print(f"✅ ZIP файл распакован: {project_name}")
+        
+        # Scan extracted content
+        print(f"🔍 Сканирую {project_name}")
+        
+        results, all_files_count = await loop.run_in_executor(
+            model_executor,
+            scan_repo_with_model,
+            extracted_path,
+            project_name,
+            request_dict
+        )
+        
+        print(f"✅ Просканировано {project_name}")
+        
+        # Send results
+        payload = {
+            "Status": "completed",
+            "Message": "Scanned Successfully",
+            "ProjectName": project_name,
+            "ProjectRepoUrl": request_dict["RepoUrl"],
+            "RepoCommit": "local_upload",
+            "Results": results,
+            "FilesScanned": all_files_count
+        }
+        
+        await send_callback(callback_url, payload)
+        print(f"✅ Результаты отправлены для {project_name}")
+        
+    except Exception as e:
+        print(f"❌ Ошибка при локальном сканировании {request_dict.get('ProjectName', 'unknown')}: {e}")
+        await send_error_callback(request_dict.get("CallbackUrl", ""), str(e))
+    finally:
+        # Cleanup
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(download_executor, delete_dir, temp_dir)
+
+def extract_zip_file(zip_path: str, extract_path: str):
+    """Extract zip file synchronously"""
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zip_file:
+            zip_file.extractall(extract_path)
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка при распаковке ZIP: {e}")
+        raise e
 
 async def process_multi_scan_sequence(multi_scan_items: list, commits: list):
     """Process multi-scan repositories sequentially"""
