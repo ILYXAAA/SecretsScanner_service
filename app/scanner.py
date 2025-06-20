@@ -5,21 +5,8 @@ import re
 from app.model_loader import get_model_instance
 import aiohttp
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 
-with open('Settings/excluded_files.yml', 'r') as f:
-    data = yaml.safe_load(f)
-
-EXCLUDED_FILES = set(data.get('excluded_files', []))
-
-with open('Settings/excluded_extensions.yml', 'r') as f:
-    data = yaml.safe_load(f)
-
-EXCLUDED_EXTENSIONS = set(data.get('excluded_extensions', []))
-
-with open('Settings/false-positive.yml', 'r') as f:
-    data = yaml.safe_load(f)
-
-FALSE_POSITIVE_RULES = set(data.get('false_positive', []))
 
 RULES_FILE = "Settings/rules.yml"
 
@@ -30,18 +17,36 @@ def load_rules(rules_file="Settings/rules.yml"):
     except Exception as error:
         print(f"Error: {str(error)} Проверьте, существует ли файл ${rules_file}$ с набором правил.")
 
+def load_other_rules():
+    with open('Settings/excluded_files.yml', 'r') as f:
+        data = yaml.safe_load(f)
+
+    EXCLUDED_FILES = set(data.get('excluded_files', []))
+
+    with open('Settings/excluded_extensions.yml', 'r') as f:
+        data = yaml.safe_load(f)
+
+    EXCLUDED_EXTENSIONS = set(data.get('excluded_extensions', []))
+
+    with open('Settings/false-positive.yml', 'r') as f:
+        data = yaml.safe_load(f)
+
+    FALSE_POSITIVE_RULES = set(data.get('false_positive', []))
+
+    return EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES
+
 def count_files(target_dir):
     count = 0
     for root, _, files in os.walk(target_dir):
         count += len(files)
     return count
 
-def check_false_positive(secret, context):
+def check_false_positive(secret, context, FALSE_POSITIVE_RULES):
     """True если секрет ложный"""
     context_lower = context.lower()
     return any(pattern.lower() in context_lower for pattern in FALSE_POSITIVE_RULES)
 
-async def _analyze_file(file_path, rules, target_dir, max_secrets=200, max_line_length=3000):
+async def _analyze_file(file_path, rules, target_dir, max_secrets=100, max_line_length=7000, FALSE_POSITIVE_RULES):
     """Асинхронная функция для анализа файла с ограничениями"""
     results = []
     secrets_found = 0
@@ -52,12 +57,17 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=200, max_line_
 
         for line_num, line in enumerate(lines, start=1):
             if secrets_found >= max_secrets:
+                hashed_secrets = hashlib.md5(line.encode('utf-8')).hexdigest()
+                all_secrets_string = ""
+                for item in results:
+                    all_secrets_string += item["secret"] + "\n"
+                hashed_secrets = hashlib.md5(all_secrets_string.encode('utf-8')).hexdigest()
                 results = []
                 results.append({
                     "path": file_path.replace(target_dir, "").replace("\\", "/"),
                     "line": line_num,
-                    "secret": f"ФАЙЛ НЕ СКАНИРОВАЛСЯ ПОЛНОСТЬЮ т.к. при анализе выявлено более {max_secrets} секретов. Проверьте файл вручную",
-                    "context": f"Прервано на строке {line_num}. Найдено секретов: {secrets_found}",
+                    "secret": f"ФАЙЛ НЕ СКАНИРОВАЛСЯ ПОЛНОСТЬЮ т.к. при анализе выявлено более {max_secrets} секретов. Проверьте файл вручную. Хеш всех секретов: {hashed_secrets}",
+                    "context": f"Найдено секретов: {secrets_found}\nСписок найденных секретов ниже:\n{all_secrets_string}",
                     "severity": "High",
                     "Type": "Too Many Secrets"
                 })
@@ -65,10 +75,11 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=200, max_line_
                 break
             
             if len(line) > max_line_length:
+                hashed_line = hashlib.md5(line.encode('utf-8')).hexdigest()
                 results.append({
                     "path": file_path.replace(target_dir, "").replace("\\", "/"),
                     "line": line_num,
-                    "secret": f"СТРОКА НЕ СКАНИРОВАЛАСЬ т.к. её длина более {max_line_length} символов. Проверьте строку вручную",
+                    "secret": f"СТРОКА НЕ СКАНИРОВАЛАСЬ т.к. её длина более {max_line_length} символов. Проверьте строку вручную. Хеш строки: {hashed_line}",
                     "context": f"Строка {line_num} содержит большое количество символов. Длина более {max_line_length}.",
                     "severity": "Potential",
                     "Type": "Too Long Line"
@@ -80,7 +91,7 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=200, max_line_
                 if match:
                     secret = match.group(0)
                     context = line.strip()
-                    if not check_false_positive(secret, context):
+                    if not check_false_positive(secret, context, FALSE_POSITIVE_RULES):
                         results.append({
                             "path": file_path.replace(target_dir, "").replace("\\", "/"),
                             "line": line_num,
@@ -99,11 +110,11 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=200, max_line_
     
     return results
 
-async def search_secrets(file_path, rules, target_dir, max_secrets=200, max_line_length=3000):
+async def search_secrets(file_path, rules, target_dir, max_secrets=100, max_line_length=7000, FALSE_POSITIVE_RULES=[]):
     """Простая обертка для анализа файла"""
-    return await _analyze_file(file_path, rules, target_dir, max_secrets, max_line_length)
+    return await _analyze_file(file_path, rules, target_dir, max_secrets, max_line_length, FALSE_POSITIVE_RULES)
 
-async def scan_directory(request, target_dir, rules):
+async def scan_directory(request, target_dir, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES):
     """Сканирование директории с отправкой промежуточных результатов"""
     all_results = []
     file_list = []
@@ -127,7 +138,7 @@ async def scan_directory(request, target_dir, rules):
         
         # Process batch concurrently
         batch_tasks = [
-            search_secrets(file_path, rules, target_dir, max_secrets=200, max_line_length=3000)
+            search_secrets(file_path, rules, target_dir, max_secrets=100, max_line_length=7000, FALSE_POSITIVE_RULES=FALSE_POSITIVE_RULES)
             for file_path in batch
         ]
         
@@ -155,7 +166,7 @@ async def scan_directory(request, target_dir, rules):
     print(f"✅ Сканирование завершено. Обработано файлов: {len(file_list)}")
     return all_results, len(file_list)
 
-async def scan_directory_without_callback(target_dir, rules):
+async def scan_directory_without_callback(target_dir, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES):
     """Сканирование директории без callback (для использования в процессах)"""
     all_results = []
     file_list = []
@@ -175,7 +186,7 @@ async def scan_directory_without_callback(target_dir, rules):
         batch = file_list[i:i + batch_size]
         
         batch_tasks = [
-            search_secrets(file_path, rules, target_dir, max_secrets=200, max_line_length=3000)
+            search_secrets(file_path, rules, target_dir, max_secrets=100, max_line_length=7000, FALSE_POSITIVE_RULES=FALSE_POSITIVE_RULES)
             for file_path in batch
         ]
         
@@ -191,8 +202,9 @@ async def scan_repo(request, repo_path, projectName):
     """Основная функция сканирования с callback"""
     model = get_model_instance()
     rules = load_rules(RULES_FILE)
+    EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES = load_other_rules()
     print(f"✅ Начинаю сканирование {projectName}")
-    results, all_files_count = await scan_directory(request, repo_path, rules)
+    results, all_files_count = await scan_directory(request, repo_path, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES)
     print("ДИРЕКТОРИЯ ПРОСКАНИРОВАНА НАЧИНАЮ ВАЛИДАЦИЮ")
     sevveritied_secrets = model.filter_secrets(results)
     return sevveritied_secrets, all_files_count
@@ -200,7 +212,8 @@ async def scan_repo(request, repo_path, projectName):
 async def scan_repo_without_callback(request, repo_path, projectName):
     """Сканирование без callback для использования в отдельных процессах"""
     rules = load_rules(RULES_FILE)
+    EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES = load_other_rules()
     print(f"✅ Начинаю сканирование {projectName}")
-    results, all_files_count = await scan_directory_without_callback(repo_path, rules)
+    results, all_files_count = await scan_directory_without_callback(repo_path, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES)
     print("ДИРЕКТОРИЯ ПРОСКАНИРОВАНА")
     return results, all_files_count
