@@ -5,6 +5,19 @@ import random
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
+import logging
+from logging.handlers import RotatingFileHandler
+
+# Setup logging to file
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        RotatingFileHandler('secrets_scanner_service.log', maxBytes=10*1024*1024, backupCount=5),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("model_loader")
 
 class SecretClassifier:
     _instance = None
@@ -28,11 +41,11 @@ class SecretClassifier:
         if os.path.exists(self.MODEL_PATH) and os.path.exists(self.VECTORIZER_PATH):
             self.model = joblib.load(self.MODEL_PATH)
             self.vectorizer = joblib.load(self.VECTORIZER_PATH)
-            print(f"✅ Модель и векторизатор загружены за {(time.time() - start_time):.2f} сек.")
+            logger.info(f"Модель и векторизатор загружены за {(time.time() - start_time):.2f} сек.")
         else:
-            print(f"Файлы модели не найдены, начинаю обучение.")
+            logger.warning(f"Файлы модели не найдены, начинаю обучение.")
             self._train_model()
-            print(f"✅ Модель обучена и сохранена за {(time.time() - start_time):.2f} сек.")
+            logger.info(f"Модель обучена и сохранена за {(time.time() - start_time):.2f} сек.")
 
     def _train_model(self):
         """Обучение модели"""
@@ -64,6 +77,7 @@ class SecretClassifier:
         joblib.dump(self.vectorizer, self.VECTORIZER_PATH)
 
     def filter_secrets(self, secrets: list[dict]) -> list[dict]:
+        classification_start = time.time()
         """
         Классифицирует каждый элемент словаря в списке secrets по полю "secret".
         Заполняет поле "severity":
@@ -100,13 +114,14 @@ class SecretClassifier:
                             # Не уверен
                             item["severity"] = "High"
         except Exception as e:
-            print(f"❌ Ошибка классификации: {e}")
+            logger.error(f"Ошибка классификации: {e}")
             # Fallback: mark all as High severity
             for item in secrets:
                 if not item.get("severity"):
                     item["severity"] = "High"
 
-        print(f"✅ Классификация завершена для {len(secrets)} элементов")
+        classification_time = time.time() - classification_start
+        logger.info(f"Классификация завершена для {len(secrets)} элементов (время: {classification_time:.2f}с)")
         return secrets
 
 # Глобальная функция для использования в FastAPI
@@ -121,7 +136,7 @@ def filter_secrets_in_process(secrets_list: list[dict]) -> list[dict]:
         classifier = SecretClassifier()
         return classifier.filter_secrets(secrets_list)
     except Exception as e:
-        print(f"❌ Ошибка в процессе классификации: {e}")
+        logger.error(f"Ошибка в процессе классификации: {e}")
         # Fallback: mark all as High severity
         for item in secrets_list:
             if not item.get("severity"):

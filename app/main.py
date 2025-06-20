@@ -1,6 +1,6 @@
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.responses import JSONResponse
-from app.models import ScanRequest, PATTokenRequest, RulesContent, MultiScanRequest, MultiScanResponse, MultiScanResponseItem
+from app.models import ScanRequest, PATTokenRequest, RulesContent, MultiScanRequest, MultiScanResponseItem
 from app.queue_worker import task_queue, start_worker, add_to_queue_background, add_multi_scan_to_queue, cleanup_executors
 from app.model_loader import get_model_instance
 from app.repo_utils import check_ref_and_resolve_git, check_ref_and_resolve_azure
@@ -9,11 +9,21 @@ import os
 import aiofiles
 from app.secure_save import encrypt_and_save, decrypt_from_file
 from dotenv import load_dotenv
-import signal
-import sys
+import logging
+from logging.handlers import RotatingFileHandler
 
 load_dotenv()
 os.system("") # Нужно для отображение цвета в консоли Windows
+# Setup logging to file
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        RotatingFileHandler('secrets_scanner_service.log', maxBytes=10*1024*1024, backupCount=5),
+        logging.StreamHandler()  # Также выводить в консоль
+    ]
+)
+logger = logging.getLogger("main")
 
 HubType = os.getenv("HubType")
 app = FastAPI()
@@ -66,29 +76,29 @@ async def startup_event():
     """Initialize model and start concurrent workers"""
     global worker_tasks
     
-    print(f"🚀 Запуск сервиса с {MAX_WORKERS} воркерами...")
+    logger.info(f"Запуск сервиса с {MAX_WORKERS} воркерами...")
     
     # Pre-load model in main process
     try:
         get_model_instance()
-        print("✅ Модель загружена в основном процессе")
+        logger.info("Модель загружена в основном процессе")
     except Exception as e:
-        print(f"⚠️ Ошибка загрузки модели: {e}")
+        logger.error(f"Ошибка загрузки модели: {e}")
     
     # Start concurrent workers
     for i in range(MAX_WORKERS):
         task = asyncio.create_task(start_worker())
         worker_tasks.append(task)
-        print(f"✅ Воркер {i+1} запущен")
+        logger.info(f"Воркер {i+1} запущен")
     
-    print(f"🎯 Сервис готов к обработке запросов")
+    logger.info(f"Сервис готов к обработке запросов")
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Graceful shutdown"""
     global worker_tasks
     
-    print("🛑 Начинаю остановку сервиса...")
+    logger.warning("Начинаю остановку сервиса...")
     
     try:
         # Cancel all worker tasks
@@ -104,18 +114,18 @@ async def shutdown_event():
                     timeout=5.0
                 )
             except asyncio.TimeoutError:
-                print("⚠️ Timeout при остановке воркеров")
+                logger.error("Timeout при остановке воркеров")
         
         # Cleanup executors
         try:
             await cleanup_executors()
         except Exception as e:
-            print(f"⚠️ Ошибка при очистке executors: {e}")
+            logger.error(f"Ошибка при очистке executors: {e}")
         
     except Exception as e:
-        print(f"⚠️ Ошибка при shutdown: {e}")
+        logger.error(f"Ошибка при shutdown: {e}")
     finally:
-        print("✅ Сервис остановлен")
+        logger.info("Сервис остановлен")
 
 # === Health Check ===
 
@@ -162,7 +172,7 @@ async def multi_scan(request: MultiScanRequest):
                     Ref=repo.Ref,
                     commit=commit
                 ))
-                print(f"✅ Resolved {repo.ProjectName}: {commit[:6]}")
+                logger.info(f"Resolved {repo.ProjectName}: {commit[:6]}")
             else:
                 all_resolved = False
                 response_data.append(MultiScanResponseItem(
@@ -171,7 +181,7 @@ async def multi_scan(request: MultiScanRequest):
                     Ref=repo.Ref,
                     commit="not_found"
                 ))
-                print(f"❌ Failed to resolve {repo.ProjectName}: {message}")
+                logger.error(f"Failed to resolve {repo.ProjectName}: {message}")
                 if not error_message:
                     error_message = message or f"Не удалось найти {repo.RefType} '{repo.Ref}'"
                     
@@ -183,7 +193,7 @@ async def multi_scan(request: MultiScanRequest):
                 Ref=repo.Ref,
                 commit="not_found"
             ))
-            print(f"❌ Error resolving {repo.ProjectName}: {e}")
+            logger.error(f"Error resolving {repo.ProjectName}: {e}")
             if not error_message:
                 error_message = str(e)
 
@@ -209,7 +219,7 @@ async def multi_scan(request: MultiScanRequest):
         return JSONResponse(
             content={
                 "status": "accepted",
-                "message": "Мультисканирование добавлено в очередь ✅",
+                "message": "Мультисканирование добавлено в очередь",
                 "data": [item.dict() for item in response_data],
                 "RepoUrl": repo.RepoUrl
             },
@@ -256,7 +266,7 @@ async def scan(request: ScanRequest):
             else:
                 raise ValueError(f"{request.RefType} '{request.Ref}' не найден в репозитории {request.RepoUrl}")
         
-        print(f"✅ Commit resolved {commit[0:6]}.. для {request.ProjectName}")
+        logger.info(f"Commit resolved {commit[0:6]}.. для {request.ProjectName}")
 
         # Add to queue for processing
         await add_to_queue_background(request, commit)
@@ -268,7 +278,7 @@ async def scan(request: ScanRequest):
                 "Ref": request.Ref,
                 "commit": commit,
                 "queue_position": task_queue.qsize(),
-                "message": "Сканирование добавлено в очередь ✅"
+                "message": "Сканирование добавлено в очередь"
             },
             status_code=200
         )
@@ -276,7 +286,7 @@ async def scan(request: ScanRequest):
         return response
     
     except ValueError as e:
-        print(f"❌ Запрос не принят - validation_failed: {e}")
+        logger.error(f"Запрос не принят - validation_failed: {e}")
         return JSONResponse(status_code=400, content={
             "status": "validation_failed",
             "RefType": request.RefType,
@@ -284,7 +294,7 @@ async def scan(request: ScanRequest):
             "message": str(e)
         })
     except Exception as e:
-        print(f"❌ Неожиданная ошибка: {e}")
+        logger.error(f"Неожиданная ошибка: {e}")
         return JSONResponse(status_code=500, content={
             "status": "error",
             "RefType": request.RefType,
@@ -304,7 +314,7 @@ async def local_scan(
     """Process uploaded zip file locally"""
     
     try:
-        print(f"📥 Получен запрос на локальное сканирование: {ProjectName}")
+        logger.info(f"Получен запрос на локальное сканирование: {ProjectName}")
         # print(f"  - RepoUrl: {RepoUrl}")
         # print(f"  - CallbackUrl: {CallbackUrl}")
         # print(f"  - zip_file.filename: {zip_file.filename}")
@@ -319,16 +329,16 @@ async def local_scan(
 
         # Validate file type
         if not zip_file.filename.endswith('.zip'):
-            print(f"❌ Неверный тип файла: {zip_file.filename}")
+            logger.error(f"Неверный тип файла: {zip_file.filename}")
             return JSONResponse(status_code=400, content={
                 "status": "validation_failed",
                 "message": "Файл должен быть в формате ZIP"
             })
 
         # Read file content immediately before putting in queue
-        print("📖 Читаю содержимое ZIP файла...")
+        logger.info("Читаю содержимое ZIP файла...")
         zip_content = await zip_file.read()
-        print(f"✅ Прочитано {len(zip_content)} байт")
+        logger.info(f"Прочитано {len(zip_content)} байт")
         
         # Create request object
         request_dict = {
@@ -341,20 +351,20 @@ async def local_scan(
 
         # Add to queue with file content instead of file object
         await task_queue.put(("local_scan", request_dict, zip_content))
-        print(f"📥 Локальное сканирование {ProjectName} поставлено в очередь")
+        logger.info(f"Локальное сканирование {ProjectName} поставлено в очередь")
         
         return JSONResponse(
             content={
                 "status": "accepted",
                 "ProjectName": ProjectName,
                 "queue_position": task_queue.qsize(),
-                "message": "Локальное сканирование добавлено в очередь ✅"
+                "message": "Локальное сканирование добавлено в очередь"
             },
             status_code=200
         )
     
     except Exception as e:
-        print(f"❌ Ошибка при добавлении локального сканирования: {e}")
+        logger.error(f"Ошибка при добавлении локального сканирования: {e}")
         import traceback
         traceback.print_exc()
         return JSONResponse(status_code=500, content={

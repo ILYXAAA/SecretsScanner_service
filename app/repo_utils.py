@@ -6,17 +6,29 @@ from requests.auth import HTTPBasicAuth
 from requests_ntlm import HttpNtlmAuth
 from requests_negotiate_sspi import HttpNegotiateAuth
 from urllib.parse import urlparse
-import aiohttp
-import re
 import io
 import shutil
 import yaml
 from dotenv import load_dotenv
 from app.secure_save import decrypt_from_file
 import urllib3
+import time
 import asyncio
+import logging
+from logging.handlers import RotatingFileHandler
+
 # Load environment variables
 load_dotenv()
+# Setup logging to file
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        RotatingFileHandler('secrets_scanner_service.log', maxBytes=10*1024*1024, backupCount=5),
+        logging.StreamHandler()  # Также выводить в консоль
+    ]
+)
+logger = logging.getLogger("repo_utils")
 
 with open('Settings/excluded_files.yml', 'r') as f:
     data = yaml.safe_load(f)
@@ -48,8 +60,8 @@ try:
     username = decrypt_from_file(LOGIN_FILE, key_name="LOGIN_KEY")
     password = decrypt_from_file(PASSWORD_FILE, key_name="PASSWORD_KEY")
 except Exception as error:
-    print(f"Error: {str(error)}")
-    print("Если это первый запуск - необходимо запустить мастер настройки Auth данных `python app/secure_save.py`")
+    logger.error(f"Error: {str(error)}")
+    logger.error("Если это первый запуск - необходимо запустить мастер настройки Auth данных `python app/secure_save.py`")
 
 auth_methods = ["basic", "pat", "Negotiate"]  # 'pat', 'basic', 'Negotiate' или None
 
@@ -147,7 +159,7 @@ async def download_repo_azure(repo_url, commit_id, extract_path):
     try:
         server, collection, project, repo_name = parse_azure_devops_url(repo_url)
     except ValueError as e:
-        print(f"❌ Ошибка парсинга URL '{repo_url}': {e}")
+        logger.error(f"Ошибка парсинга URL '{repo_url}': {e}")
         return False
 
     base_url = f"https://{server}/{collection}"
@@ -163,7 +175,8 @@ async def download_repo_azure(repo_url, commit_id, extract_path):
     }
 
     for auth_method in auth_methods:
-        print(f"📥 Скачиваем '{repo_name}' --> {commit_id[:7]}... auth_method: {auth_method}")
+        download_start = time.time()
+        logger.info(f"Скачиваем '{repo_name}' --> {commit_id[:7]}... auth_method: {auth_method}")
         auth = get_auth(auth_method)
 
         response = requests.get(api_url, params=params, auth=auth, stream=True, verify=False)
@@ -178,16 +191,17 @@ async def download_repo_azure(repo_url, commit_id, extract_path):
                 with zipfile.ZipFile(temp_zip_path) as zip_file:
                     zip_file.extractall(extract_path)
                     # safe_extract(zip_file, extract_path)
-                print(f"✅ Репозиторий успешно распакован в: {extract_path}")
+                download_time = time.time() - download_start
+                logger.info(f"Репозиторий успешно распакован в: {extract_path} (время: {download_time:.2f}с)")
                 os.unlink(temp_zip_path)
                 return extract_path, "Success"
             
             except Exception as e:
-                print(f"❌ Ошибка при распаковке архива: {e}")
+                logger.error(f"Ошибка при распаковке архива: {e}")
                 return_string = f"Ошибка при распаковке архива: {e}"
                 return "", return_string
             
-    print(f"❌ Ошибка при скачивании {repo_name}: {response.status_code}")
+    logger.error(f"Ошибка при скачивании {repo_name}: {response.status_code}")
     return_string = f"Ошибка при скачивании {repo_name}: {response.status_code}"
     return "", return_string
 
@@ -200,6 +214,7 @@ async def download_github_repo(repo_url, commit_id, extract_path):
     :param extract_path: Путь для распаковки архива
     """
     os.makedirs(extract_path, exist_ok=True)
+    download_start = time.time()
     try:
         # Убедимся, что URL не заканчивается на /
         repo_url = repo_url.rstrip('/')
@@ -207,7 +222,7 @@ async def download_github_repo(repo_url, commit_id, extract_path):
         # Формируем ссылку на zip архив коммита
         zip_url = f"{repo_url}/archive/{commit_id}.zip"
 
-        print(f"🔽 Скачиваем {zip_url}...")
+        logger.info(f"Скачиваем {zip_url}...")
 
         # Скачиваем zip архив
         response = requests.get(zip_url, verify=False)
@@ -217,14 +232,15 @@ async def download_github_repo(repo_url, commit_id, extract_path):
         with zipfile.ZipFile(io.BytesIO(response.content)) as zip_file:
             zip_file.extractall(extract_path)
 
-        print(f"✅ Репозиторий успешно скачан и распакован в: {extract_path}")
+        download_time = time.time() - download_start
+        logger.info(f"Репозиторий успешно скачан и распакован в: {extract_path} (время: {download_time:.2f}с)")
         return extract_path, "Success"
     except requests.HTTPError as http_err:
-        print(f"❌ HTTP ошибка: {http_err}")
+        logger.error(f"HTTP ошибка: {http_err}")
         return_string = f"HTTP ошибка: {http_err}"
         return "", return_string
     except Exception as err:
-        print(f"❌ Общая ошибка: {err}")
+        logger.error(f"Общая ошибка: {err}")
         return_string = f"Общая ошибка: {err}"
         return "", return_string
 
@@ -244,7 +260,7 @@ async def check_ref_and_resolve_azure(repo_url: str, ref_type: str, ref: str):
 
     for auth_method in auth_methods:
         auth = get_auth(auth_method)
-        print(f"Try to resolve {repo_url} --> {ref_type}. auth_method={auth_method}")
+        logger.info(f"Try to resolve {repo_url} --> {ref_type}. auth_method={auth_method}")
 
         try:
             server, collection, project, repository = parse_azure_devops_url(repo_url)
@@ -315,7 +331,7 @@ async def check_ref_and_resolve_azure(repo_url: str, ref_type: str, ref: str):
 
         except Exception as e:
             message = f"Ошибка при проверке Azure DevOps ссылки: {e}"
-            print(f"❌ {message}")
+            logger.error(f"{message}")
             return False, None, message
 
     return False, None, message

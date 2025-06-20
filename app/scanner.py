@@ -4,9 +4,21 @@ import yaml
 import re
 from app.model_loader import get_model_instance
 import aiohttp
-from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import time
+import logging
+from logging.handlers import RotatingFileHandler
 
+# Setup logging to file
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        RotatingFileHandler('secrets_scanner_service.log', maxBytes=10*1024*1024, backupCount=5),
+        logging.StreamHandler()  # Также выводить в консоль
+    ]
+)
+logger = logging.getLogger("scanner")
 
 RULES_FILE = "Settings/rules.yml"
 
@@ -15,7 +27,7 @@ def load_rules(rules_file="Settings/rules.yml"):
         with open(rules_file, "r", encoding="UTF-8") as f:
             return yaml.safe_load(f)
     except Exception as error:
-        print(f"Error: {str(error)} Проверьте, существует ли файл ${rules_file}$ с набором правил.")
+        logger.error(f"Error: {str(error)} Проверьте, существует ли файл ${rules_file}$ с набором правил.")
 
 def load_other_rules():
     with open('Settings/excluded_files.yml', 'r') as f:
@@ -71,7 +83,7 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=100, max_line_
                     "severity": "High",
                     "Type": "Too Many Secrets"
                 })
-                print(f"🛑 Прервано сканирование {file_path} - найдено более {max_secrets} секретов")
+                logger.warning(f"Прервано сканирование {file_path} - найдено более {max_secrets} секретов")
                 break
             
             if len(line) > max_line_length:
@@ -106,7 +118,7 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=100, max_line_
                         break
                         
     except Exception as error:
-        print(f"❌ Error: {str(error)} — ошибка при обработке {file_path}")
+        logger.error(f"Error: {str(error)} — ошибка при обработке {file_path}")
     
     return results
 
@@ -116,10 +128,12 @@ async def search_secrets(file_path, rules, target_dir, max_secrets=100, max_line
 
 async def scan_directory(request, target_dir, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES):
     """Сканирование директории с отправкой промежуточных результатов"""
+    scan_start = time.time()
     all_results = []
     file_list = []
 
     # Собираем список файлов для обработки
+    file_collection_start = time.time()
     for root, _, files in os.walk(target_dir):
         for file in files:           
             file_ext = file.split(".")[-1].lower()
@@ -127,13 +141,16 @@ async def scan_directory(request, target_dir, rules, EXCLUDED_FILES, EXCLUDED_EX
                 continue
             file_list.append(os.path.join(root, file))
 
-    print(f"📁 Найдено файлов для сканирования: {len(file_list)}")
+    file_collection_time = time.time() - file_collection_start
+    logger.info(f"Найдено файлов для сканирования: {len(file_list)} (время сбора: {file_collection_time:.2f}с)")
     
     SEND_PARTIAL_EVERY = max(1, len(file_list) // 10)
     
     # Process files concurrently in batches
     batch_size = 5
+    files_processed = 0
     for i in range(0, len(file_list), batch_size):
+        batch_start = time.time()
         batch = file_list[i:i + batch_size]
         
         # Process batch concurrently
@@ -148,29 +165,36 @@ async def scan_directory(request, target_dir, rules, EXCLUDED_FILES, EXCLUDED_EX
         for results in batch_results:
             all_results.extend(results)
         
+        files_processed += len(batch)
+        batch_time = time.time() - batch_start
+        
         # Send partial results
-        if (i + batch_size) % SEND_PARTIAL_EVERY == 0:
+        if files_processed % SEND_PARTIAL_EVERY == 0:
             payload = {
                 "Status": "partial",
-                "FilesScanned": i + batch_size
+                "FilesScanned": files_processed
             }
             
             try:
                 timeout = aiohttp.ClientTimeout(total=10)
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     await session.post(request.CallbackUrl, json=payload)
-                print(f"📊 Отправлен промежуточный результат: {i + batch_size}/{len(file_list)}")
+                logger.info(f"Отправлен промежуточный результат: {files_processed}/{len(file_list)} (batch время: {batch_time:.2f}с)")
             except Exception as e:
-                print(f"⚠️ Ошибка отправки промежуточного результата: {e}")
+                logger.warning(f"Ошибка отправки промежуточного результата: {e}")
 
-    print(f"✅ Сканирование завершено. Обработано файлов: {len(file_list)}")
+    total_scan_time = time.time() - scan_start
+    logger.info(f"Сканирование завершено. Обработано файлов: {len(file_list)}, найдено секретов: {len(all_results)} (общее время: {total_scan_time:.2f}с)")
     return all_results, len(file_list)
 
 async def scan_directory_without_callback(target_dir, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES):
     """Сканирование директории без callback (для использования в процессах)"""
+    scan_start = time.time()
     all_results = []
     file_list = []
 
+    # Сбор файлов
+    file_collection_start = time.time()
     for root, _, files in os.walk(target_dir):
         for file in files:           
             file_ext = file.split(".")[-1].lower()
@@ -178,7 +202,8 @@ async def scan_directory_without_callback(target_dir, rules, EXCLUDED_FILES, EXC
                 continue
             file_list.append(os.path.join(root, file))
 
-    print(f"📁 Найдено файлов для сканирования: {len(file_list)}")
+    file_collection_time = time.time() - file_collection_start
+    logger.info(f"Найдено файлов для сканирования: {len(file_list)} (время сбора: {file_collection_time:.2f}с)")
     
     # Process files concurrently in batches
     batch_size = 5
@@ -195,25 +220,47 @@ async def scan_directory_without_callback(target_dir, rules, EXCLUDED_FILES, EXC
         for results in batch_results:
             all_results.extend(results)
 
-    print(f"✅ Сканирование завершено. Обработано файлов: {len(file_list)}")
+    total_scan_time = time.time() - scan_start
+    logger.info(f"Сканирование завершено. Обработано файлов: {len(file_list)}, найдено секретов: {len(all_results)} (общее время: {total_scan_time:.2f}с)")
     return all_results, len(file_list)
 
 async def scan_repo(request, repo_path, projectName):
     """Основная функция сканирования с callback"""
+    total_start = time.time()
+    
+    model_load_start = time.time()
     model = get_model_instance()
+    model_load_time = time.time() - model_load_start
+    
     rules = load_rules(RULES_FILE)
     EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES = load_other_rules()
-    print(f"✅ Начинаю сканирование {projectName}")
+    
+    logger.info(f"Начинаю сканирование {projectName} (загрузка модели: {model_load_time:.2f}с)")
+    
     results, all_files_count = await scan_directory(request, repo_path, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES)
-    print("ДИРЕКТОРИЯ ПРОСКАНИРОВАНА НАЧИНАЮ ВАЛИДАЦИЮ")
+    
+    validation_start = time.time()
+    logger.info("ДИРЕКТОРИЯ ПРОСКАНИРОВАНА, НАЧИНАЮ ВАЛИДАЦИЮ")
     sevveritied_secrets = model.filter_secrets(results)
+    validation_time = time.time() - validation_start
+    
+    total_time = time.time() - total_start
+    logger.info(f"Сканирование {projectName} завершено (валидация: {validation_time:.2f}с, общее время: {total_time:.2f}с)")
+    
     return sevveritied_secrets, all_files_count
 
 async def scan_repo_without_callback(request, repo_path, projectName):
     """Сканирование без callback для использования в отдельных процессах"""
+    scan_start = time.time()
+    
     rules = load_rules(RULES_FILE)
     EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES = load_other_rules()
-    print(f"✅ Начинаю сканирование {projectName}")
+    
+    logger.info(f"Начинаю сканирование {projectName}")
+    
     results, all_files_count = await scan_directory_without_callback(repo_path, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES)
-    print("ДИРЕКТОРИЯ ПРОСКАНИРОВАНА")
+    
+    total_time = time.time() - scan_start
+    logger.info(f"Сканирование {projectName} без callback завершено (общее время: {total_time:.2f}с)")
+    
     return results, all_files_count
