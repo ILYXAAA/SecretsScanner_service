@@ -104,7 +104,7 @@ def setup_multiprocessing():
 def setup_host():
     logging.info("Необходимо настроить HOST")
     while True:
-        host = input("Введите HOST в (формате 127.0.0.1)\n>")
+        host = input("Введите HOST (в формате 127.0.0.1)\n>")
         try:
             ipaddress.ip_address(host) # Вызовет ValueError если хост некорректный
             set_key(".env", "HOST", host)
@@ -116,7 +116,7 @@ def setup_host():
 def setup_port():
     logging.info("Необходимо настроить PORT")
     while True:
-        port = input("Введите PORT в (формате 8001)\n>")
+        port = input("Введите PORT (в формате 8001)\n>")
         if port.isdigit() and 1 <= int(port) <= 65535:
             set_key(".env", "PORT", port)
             load_dotenv(override=True)
