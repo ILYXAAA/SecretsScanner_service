@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-Production startup script for Secret Scanner Service
-Supports graceful shutdown and proper resource management
-"""
-
 import uvicorn
 import os
 import sys
@@ -11,7 +5,10 @@ import signal
 import multiprocessing
 import logging
 from pathlib import Path
-from dotenv import load_dotenv
+import ipaddress
+from cryptography.fernet import Fernet
+import secrets
+from dotenv import load_dotenv, set_key
 os.system("") # Для цветной консоли
 
 # Configure colored logging
@@ -73,17 +70,14 @@ def setup_logging():
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
     
-    # Remove existing handlers
     for handler in logger.handlers[:]:
         logger.removeHandler(handler)
     
-    # Console handler
     console_handler = logging.StreamHandler()
     formatter = ColoredFormatter(fmt='[%(levelname)s] %(message)s')
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
     
-    # File handler
     from logging.handlers import RotatingFileHandler
     file_handler = RotatingFileHandler(
         'secrets_scanner_service.log', 
@@ -107,108 +101,173 @@ def setup_multiprocessing():
         except RuntimeError:
             pass
 
-def validate_environment():
-    """Validate required environment variables and files"""
-    # Load environment variables
+def setup_host():
+    logging.info("Необходимо настроить HOST")
+    while True:
+        host = input("Введите HOST в (формате 127.0.0.1)\n>")
+        try:
+            ipaddress.ip_address(host) # Вызовет ValueError если хост некорректный
+            set_key(".env", "HOST", host)
+            load_dotenv(override=True)
+            break
+        except ValueError as error:
+            print(str(error))
+        
+def setup_port():
+    logging.info("Необходимо настроить PORT")
+    while True:
+        port = input("Введите PORT в (формате 8001)\n>")
+        if port.isdigit() and 1 <= int(port) <= 65535:
+            set_key(".env", "PORT", port)
+            load_dotenv(override=True)
+            break
+
+def setup_login_key():
+    logging.info("Необходимо настроить LOGIN_KEY")
+    while True:
+        try:
+            filename = "Settings/login.dat"
+            message = input("Введите логин (NTLM Auth)\n>")
+
+            key = Fernet.generate_key().decode()
+            fernet = Fernet(key.encode())
+            encrypted = fernet.encrypt(message.encode())
+
+            with open(filename, "wb") as file:
+                file.write(encrypted)
+
+            input("Нажмите Enter для подтверждения (Консоль будет очищена)")
+            set_key(".env", "LOGIN_KEY", key)
+            load_dotenv(override=True)
+            os.system('cls' if os.name == 'nt' else 'clear')
+            break
+        except Exception as error:
+            print(str(error))
+
+def setup_password_key():
+    logging.info("Необходимо настроить PASSWORD_KEY")
+    while True:
+        try:
+            filename = "Settings/password.dat"
+            message = input("Введите пароль (NTLM Auth)\n>")
+
+            key = Fernet.generate_key().decode()
+            fernet = Fernet(key.encode())
+            encrypted = fernet.encrypt(message.encode())
+
+            with open(filename, "wb") as file:
+                file.write(encrypted)
+
+            input("Нажмите Enter для подтверждения (Консоль будет очищена)")
+            set_key(".env", "PASSWORD_KEY", key)
+            load_dotenv(override=True)
+            os.system('cls' if os.name == 'nt' else 'clear')
+            break
+        except Exception as error:
+            print(str(error))
+
+def setup_pat_key():
+    logging.info("Необходимо настроить PAT токен")
+    while True:
+        try:
+            filename = "Settings/pat_token.dat"
+            message = input("Введите PAT токен\n>")
+
+            key = Fernet.generate_key().decode()
+            fernet = Fernet(key.encode())
+            encrypted = fernet.encrypt(message.encode())
+
+            with open(filename, "wb") as file:
+                file.write(encrypted)
+
+            input("Нажмите Enter для подтверждения (Консоль будет очищена)")
+            set_key(".env", "PAT_KEY", key)
+            load_dotenv(override=True)
+            os.system('cls' if os.name == 'nt' else 'clear')
+            break
+        except Exception as error:
+            print(str(error))
+
+def setup_api_key():
+    logging.info("Необходимо настроить API_KEY (используется для доступа к данному микросервису)")
+    answer = input("Хотите сгенерировать токен автоматически? (Y/N)\n>")
+    if answer.lower() in ["y", "ye", "yes"]:
+        apiKey = secrets.token_urlsafe(32)
+        print(f"Сгенерирован API_KEY. Скопируйте его и используйте для доступа к данному микросервису")
+        print(f"> {apiKey}")
+        input("Нажмите Enter для подтверждения (Консоль будет очищена)")
+        set_key(".env", "API_KEY", apiKey)
+        load_dotenv(override=True)
+        os.system('cls' if os.name == 'nt' else 'clear')
+    else:
+        print("Введите API_TOKEN")
+        apiKey = input(">")
+        input("Нажмите Enter для подтверждения (Консоль будет очищена)")
+        set_key(".env", "API_KEY", apiKey)
+        load_dotenv(override=True)
+        os.system('cls' if os.name == 'nt' else 'clear')
+
+def create_default_env_file():
+    """Создает .env файл с базовыми настройками"""
+    if not os.path.exists(".env"):
+        with open('.env', 'w') as f:
+            f.write("")
+    
+    set_key(".env", "HubType", "Azure")
+    set_key(".env", "MAX_WORKERS", "10")
+    set_key(".env", "TEMP_DIR", "tmp/")
+    load_dotenv(override=True)
+
+    logging.info(".env обновлен базовыми настройками")
+
+def is_first_run():
+    """Проверяет, является ли это первым запуском"""
     env_file = Path('.env')
-    if env_file.exists():
-        load_dotenv()
-        logging.info(".env configuration file found and loaded")
-    else:
-        logging.warning(".env file not found. Creating from template...")
-        create_env_file()
-        load_dotenv()
-        logging.info(".env file created - configuration required")
+    if not env_file.exists():
+        return True
     
-    # Create required directories
-    required_dirs = [
-        "Settings",
-        "Model", 
-        "Datasets",
-        "tmp"
-    ]
+    # Проверяем содержимое .env файла
+    load_dotenv()
+    required_vars = ['HubType', 'MAX_WORKERS', 'HOST', 'PORT', 'LOGIN_KEY', 'PASSWORD_KEY', 'PAT_KEY', 'API_KEY']
     
-    for dir_name in required_dirs:
-        dir_path = Path(dir_name)
-        if not dir_path.exists():
-            logging.info(f"Creating directory: {dir_name}")
-            dir_path.mkdir(parents=True, exist_ok=True)
-        else:
-            logging.info(f"Directory '{dir_name}' found")
-    
-    # Check dataset files
-    secrets_dataset = os.getenv("SECRETS_DATASET", "Datasets/Dataset_Secrets.txt")
-    non_secrets_dataset = os.getenv("NOT_SECRETS_DATASET", "Datasets/Dataset_NonSecrets.txt")
-    
-    if not Path(secrets_dataset).exists():
-        logging.warning(f"Dataset file {secrets_dataset} not found")
-        logging.info("Create file with secret examples for model training")
-    else:
-        logging.info(f"Secrets dataset found: {secrets_dataset}")
-    
-    if not Path(non_secrets_dataset).exists():
-        logging.warning(f"Dataset file {non_secrets_dataset} not found")
-        logging.info("Create file with non-secret examples for model training")
-    else:
-        logging.info(f"Non-secrets dataset found: {non_secrets_dataset}")
-    
-    # Check configuration files
-    config_files = {
-        "RULES_FILE": "Settings/rules.yml",
-        "EXCLUDED_FILES_PATH": "Settings/excluded_files.yml",
-        "EXCLUDED_EXTENSIONS_PATH": "Settings/excluded_extensions.yml"
-    }
-    
-    for env_var, default_path in config_files.items():
-        file_path = os.getenv(env_var, default_path)
-        if not Path(file_path).exists():
-            logging.warning(f"Configuration file {file_path} not found")
-        else:
-            logging.info(f"Configuration file found: {file_path}")
-    
-    # Check authentication files
-    auth_files = {
-        "LOGIN_FILE": "Settings/login.dat",
-        "PASSWORD_FILE": "Settings/password.dat", 
-        "PAT_TOKEN_FILE": "Settings/pat_token.dat"
-    }
-    
-    missing_auth = []
-    for env_var, default_path in auth_files.items():
-        file_path = os.getenv(env_var, default_path)
-        if not Path(file_path).exists():
-            missing_auth.append(file_path)
-        else:
-            logging.info(f"Authentication file found: {file_path}")
-    
-    if missing_auth:
-        logging.error("Missing authentication files:")
-        for file in missing_auth:
-            logging.error(f"  - {file}")
-        logging.info("To configure authentication:")
-        logging.info("   Run: python app/secure_save.py")
-        return False
-    
-    # Check required environment variables
-    required_env_vars = ["LOGIN_KEY", "PASSWORD_KEY", "PAT_KEY"]
-    missing_vars = []
-    
-    for var in required_env_vars:
+    for var in required_vars:
         value = os.getenv(var)
-        if not value or value == "***":
-            missing_vars.append(var)
-        else:
-            logging.info(f"{var} is configured")
+        if not value:
+            return True
     
-    if missing_vars:
-        logging.error("Missing required environment variables:")
-        for var in missing_vars:
-            logging.error(f"  - {var}")
-        logging.info("Configure these variables in .env file or run app/secure_save.py")
-        return False
+    return False
+
+def validate_environment():
+    logging.info("Валидация настроек окружения...")
+    if is_first_run():
+        logging.info("Обнаружен первый запуск. Настройка окружения...")
+        create_default_env_file()
     
-    logging.info("Environment validation completed successfully")
-    return True
+    if not os.getenv("HOST"):
+        setup_host()
+    if not os.getenv("PORT"):
+        setup_port()
+    if not os.getenv("PAT_KEY") or os.getenv("PAT_KEY") == "***":
+        setup_pat_key()
+    if not os.getenv("LOGIN_KEY") or os.getenv("LOGIN_KEY") == "***":
+        setup_login_key()
+    if not os.getenv("PASSWORD_KEY") or os.getenv("PASSWORD_KEY") == "***":
+        setup_password_key()
+    if not os.getenv("API_KEY") or os.getenv("API_KEY") == "***":
+        setup_api_key()
+
+    required_files = ["app/main.py", "app/model_loader.py", "app/models.py", "app/queue_worker.py", "app/repo_utils.py",
+                      "app/scanner.py", "app/secure_save.py", "Datasets/Dataset_NonSecrets.txt", "Datasets/Dataset_Secrets.txt",
+                      "Settings/excluded_extensions.yml", "Settings/excluded_files.yml", "Settings/false-positive.yml",
+                      "Settings/rules.yml", "Settings/login.dat", "Settings/password.dat", "Settings/pat_token.dat"]
+    
+    validation_result = True
+    for file in required_files:
+        if not os.path.exists(file):
+            logging.error(f"Required файл не найден: {file}")
+            validation_result = False
+
+    return validation_result
 
 def check_dependencies():
     """Check if required Python packages are installed"""
@@ -230,10 +289,9 @@ def check_dependencies():
 
 def get_server_config():
     """Get server configuration from environment"""
-    host = os.getenv("HOST", "127.0.0.1")
-    port = int(os.getenv("PORT", "8001"))
-    workers = int(os.getenv("MAX_WORKERS", "10"))
-    log_level = os.getenv("LOG_LEVEL", "info").lower()
+    host = os.getenv("HOST")
+    port = int(os.getenv("PORT"))
+    log_level = "info"
     
     return {
         "host": host,
@@ -267,20 +325,19 @@ def print_startup_info():
     print("\n" + "=" * 60)
     print("SECRET SCANNER SERVICE")
     print("=" * 60)
-    print(f"Server: http://{config['host']}:{config['port']}")
-    print(f"Hub Type: {hub_type.upper()}")
-    print(f"Max Workers: {max_workers}")
-    print(f"Log Level: {config['log_level'].upper()}")
-    print(f"Temp Directory: {temp_dir}")
-    print(f"Platform: {sys.platform}")
-    print(f"Python: {sys.version.split()[0]}")
-    print(f"CPU Count: {multiprocessing.cpu_count()}")
+    logging.info(f"Server: http://{config['host']}:{config['port']}")
+    logging.info(f"Hub Type: {hub_type.upper()}")
+    logging.info(f"Max Workers: {max_workers}")
+    logging.info(f"Log Level: {config['log_level'].upper()}")
+    logging.info(f"Temp Directory: {temp_dir}")
+    logging.info(f"Platform: {sys.platform}")
+    logging.info(f"Python: {sys.version.split()[0]}")
+    logging.info(f"CPU Count: {multiprocessing.cpu_count()}")
     print("=" * 60)
 
 def main():
     """Main startup function"""
-    # Setup logging first
-    logger = setup_logging()
+    setup_logging()
     
     print("Secret Scanner Service Startup")
     print("=" * 40)
@@ -293,26 +350,19 @@ def main():
             logging.info("Please run: pip install -r requirements.txt")
             sys.exit(1)
         
-        # Setup multiprocessing
         setup_multiprocessing()
         
-        # Validate environment
-        print("\nValidating environment...")
         if not validate_environment():
-            logging.error("Environment validation failed")
-            logging.info("Please complete the configuration steps shown above")
+            print("Произошла ошибка валидации переменных окружения. Завершение программы")
             sys.exit(1)
+        logging.info("Валидация переменных окружения прошла успешно")
         
-        # Print startup info
         print_startup_info()
         
-        # Setup signal handlers
         setup_signal_handlers()
         
-        # Get server configuration
         config = get_server_config()
         
-        # Start the server
         print("\nStarting HTTP server...")
         uvicorn.run("app.main:app", **config)
         

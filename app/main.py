@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Header, Depends
 from fastapi.responses import JSONResponse
 from app.models import ScanRequest, PATTokenRequest, RulesContent, MultiScanRequest, MultiScanResponseItem
 from app.queue_worker import task_queue, start_worker, add_to_queue_background, add_multi_scan_to_queue, cleanup_executors
@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 import logging
 from logging.handlers import RotatingFileHandler
 from contextlib import asynccontextmanager
+import secrets
 
 load_dotenv()
 os.system("") # Нужно для отображение цвета в консоли Windows
@@ -27,6 +28,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("main")
 HubType = os.getenv("HubType")
+API_KEY = os.getenv("API_KEY")
+
+async def validate_api_key(x_api_key: str = Header(None)):
+    if not x_api_key or not secrets.compare_digest(x_api_key, API_KEY):
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return x_api_key
 
 # === Application Lifecycle ===
 @asynccontextmanager
@@ -98,7 +105,7 @@ worker_tasks = []
 
 # === PAT Token Endpoints ===
 
-@app.post("/set-pat")
+@app.post("/set-pat", dependencies=[Depends(validate_api_key)])
 async def set_pat_token(payload: PATTokenRequest):
     if not payload.token:
         raise HTTPException(status_code=400, detail="Token is required")
@@ -110,7 +117,7 @@ async def set_pat_token(payload: PATTokenRequest):
     
     return {"status": "success", "message": "PAT token saved"}
 
-@app.get("/get-pat")
+@app.get("/get-pat", dependencies=[Depends(validate_api_key)])
 async def get_pat_token():
     try:
         if not os.path.exists(TOKEN_FILE):
@@ -128,7 +135,7 @@ async def get_pat_token():
 
 
 # === Health Check ===
-@app.get("/health")
+@app.get("/health", dependencies=[Depends(validate_api_key)])
 async def health():
     return {
         "status": "healthy", 
@@ -139,7 +146,7 @@ async def health():
     }
 
 # === Multi-Scanning Endpoint ===
-@app.post("/multi_scan")
+@app.post("/multi_scan", dependencies=[Depends(validate_api_key)])
 async def multi_scan(request: MultiScanRequest):
     """Process multiple repositories sequentially"""
     
@@ -235,7 +242,7 @@ async def multi_scan(request: MultiScanRequest):
 
 # === Scanning Endpoint ===
 
-@app.post("/scan")
+@app.post("/scan", dependencies=[Depends(validate_api_key)])
 async def scan(request: ScanRequest):
     # Check queue capacity (allow some buffer over max workers)
     if task_queue.qsize() >= MAX_WORKERS * 2:
@@ -300,7 +307,7 @@ async def scan(request: ScanRequest):
             "message": "Внутренняя ошибка сервера"
         })
 
-@app.post("/local_scan")
+@app.post("/local_scan", dependencies=[Depends(validate_api_key)])
 async def local_scan(
     ProjectName: str = Form(...),
     RepoUrl: str = Form(...),
@@ -433,7 +440,7 @@ def validate_yaml_structure(content: str, file_type: str) -> tuple[bool, str]:
 ###########################
 # Rules.yml ###############
 ###########################
-@app.get("/rules-info")
+@app.get("/rules-info", dependencies=[Depends(validate_api_key)])
 async def rules_info():
     if os.path.exists(RULES_PATH):
         stat = os.stat(RULES_PATH)
@@ -450,7 +457,7 @@ async def rules_info():
         "path": os.path.abspath(RULES_PATH)
     }
 
-@app.get("/get-rules")
+@app.get("/get-rules", dependencies=[Depends(validate_api_key)])
 async def get_rules():
     try:
         if not os.path.exists(RULES_PATH):
@@ -467,7 +474,7 @@ async def get_rules():
             "message": f"Ошибка при чтении файла: {str(e)}"
         })
 
-@app.post("/update-rules")
+@app.post("/update-rules", dependencies=[Depends(validate_api_key)])
 async def update_rules(data: RulesContent):
     try:
         info = await update_rules_file(data.content)
@@ -509,7 +516,7 @@ async def update_rules_file(content: str):
 ###########################
 # excluded_files.yml ######
 ###########################
-@app.get("/excluded-files-info")
+@app.get("/excluded-files-info", dependencies=[Depends(validate_api_key)])
 async def excluded_files_info():
     if os.path.exists(EXCLUDED_FILES_PATH):
         stat = os.stat(EXCLUDED_FILES_PATH)
@@ -526,7 +533,7 @@ async def excluded_files_info():
         "path": os.path.abspath(EXCLUDED_FILES_PATH)
     }
 
-@app.get("/get-excluded-files")
+@app.get("/get-excluded-files", dependencies=[Depends(validate_api_key)])
 async def get_excluded_files():
     try:
         if not os.path.exists(EXCLUDED_FILES_PATH):
@@ -543,7 +550,7 @@ async def get_excluded_files():
             "message": f"Ошибка при чтении файла: {str(e)}"
         })
 
-@app.post("/update-excluded-files")
+@app.post("/update-excluded-files", dependencies=[Depends(validate_api_key)])
 async def update_excluded_files(data: RulesContent):
     try:
         info = await do_update_excluded_files(data.content)
@@ -585,7 +592,7 @@ async def do_update_excluded_files(content: str):
 ###########################
 # excluded_extensions.yml #
 ###########################
-@app.get("/excluded-extensions-info")
+@app.get("/excluded-extensions-info", dependencies=[Depends(validate_api_key)])
 async def excluded_extensions_info():
     if os.path.exists(EXCLUDED_EXTENSIONS_PATH):
         stat = os.stat(EXCLUDED_EXTENSIONS_PATH)
@@ -602,7 +609,7 @@ async def excluded_extensions_info():
         "path": os.path.abspath(EXCLUDED_EXTENSIONS_PATH)
     }
 
-@app.get("/get-excluded-extensions")
+@app.get("/get-excluded-extensions", dependencies=[Depends(validate_api_key)])
 async def get_excluded_extensions():
     try:
         if not os.path.exists(EXCLUDED_EXTENSIONS_PATH):
@@ -619,7 +626,7 @@ async def get_excluded_extensions():
             "message": f"Ошибка при чтении файла: {str(e)}"
         })
 
-@app.post("/update-excluded-extensions")
+@app.post("/update-excluded-extensions", dependencies=[Depends(validate_api_key)])
 async def update_excluded_extensions(data: RulesContent):
     try:
         info = await do_update_excluded_extensions(data.content)
@@ -661,7 +668,7 @@ async def do_update_excluded_extensions(content: str):
 ##########################################
 # False-Positive Rules.yml ###############
 ##########################################
-@app.get("/rules-fp-info")
+@app.get("/rules-fp-info", dependencies=[Depends(validate_api_key)])
 async def rules_fp_info():
     if os.path.exists(FP_FILE_PATH):
         stat = os.stat(FP_FILE_PATH)
@@ -678,7 +685,7 @@ async def rules_fp_info():
         "path": os.path.abspath(FP_FILE_PATH)
     }
 
-@app.get("/get-fp-rules")
+@app.get("/get-fp-rules", dependencies=[Depends(validate_api_key)])
 async def get_fp_rules():
     try:
         if not os.path.exists(FP_FILE_PATH):
@@ -695,7 +702,7 @@ async def get_fp_rules():
             "message": f"Ошибка при чтении файла: {str(e)}"
         })
 
-@app.post("/update-fp-rules")
+@app.post("/update-fp-rules", dependencies=[Depends(validate_api_key)])
 async def update_fp_rules(data: RulesContent):
     try:
         info = await update_fp_rules_file(data.content)
