@@ -14,6 +14,7 @@ from app.secure_save import decrypt_from_file
 import urllib3
 import time
 import asyncio
+import base64
 import logging
 from logging.handlers import RotatingFileHandler
 
@@ -177,13 +178,22 @@ async def download_repo_azure(repo_url, commit_id, extract_path):
     for auth_method in auth_methods:
         download_start = time.time()
         logger.info(f"Скачиваем '{repo_name}' --> {commit_id[:7]}... auth_method: {auth_method}")
-        auth = get_auth(auth_method)
-
-        response = requests.get(api_url, params=params, auth=auth, stream=True, verify=False)
+        
+        # Специальная обработка для PAT токена
+        if auth_method == 'pat' and pat:
+            # Кодируем PAT токен в base64 для Basic аутентификации
+            token_b64 = base64.b64encode((':' + pat).encode('ascii')).decode('ascii')
+            headers = {
+                'Authorization': f'Basic {token_b64}'
+            }
+            response = requests.get(api_url, params=params, headers=headers, stream=True, verify=False)
+        else:
+            # Для других методов аутентификации используем обычный подход
+            auth = get_auth(auth_method)
+            response = requests.get(api_url, params=params, auth=auth, stream=True, verify=False)
 
         if response.status_code == 200:
             try:
-                #zip_content = io.BytesIO(response.content)
                 with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as temp_file:
                     temp_zip_path = temp_file.name
                     temp_file.write(response.content)
