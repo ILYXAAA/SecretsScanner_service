@@ -6,6 +6,7 @@ from app.model_loader import get_model_instance
 import aiohttp
 import hashlib
 import time
+import fnmatch
 import logging
 from logging.handlers import RotatingFileHandler
 
@@ -57,6 +58,16 @@ def check_false_positive(secret, context, FALSE_POSITIVE_RULES):
     """True если секрет ложный"""
     context_lower = context.lower()
     return any(pattern.lower() in context_lower for pattern in FALSE_POSITIVE_RULES)
+
+def get_full_extension(filename):
+    match = re.search(r'(\.[^.]+){1,2}$', filename)
+    return match.group(0).lower() if match else ''
+
+def is_extension_excluded(file_ext, EXCLUDED_EXTENSIONS):
+    for pattern in EXCLUDED_EXTENSIONS:
+        if fnmatch.fnmatch(file_ext, pattern):
+            return True
+    return False
 
 async def _analyze_file(file_path, rules, target_dir, max_secrets=100, max_line_length=7000, FALSE_POSITIVE_RULES=[]):
     """Асинхронная функция для анализа файла с ограничениями"""
@@ -136,7 +147,9 @@ async def scan_directory(request, target_dir, rules, EXCLUDED_FILES, EXCLUDED_EX
     file_collection_start = time.time()
     for root, _, files in os.walk(target_dir):
         for file in files:           
-            file_ext = file.split(".")[-1].lower()
+            file_ext = get_full_extension(file)
+            if is_extension_excluded(file_ext, EXCLUDED_EXTENSIONS) or file in EXCLUDED_FILES:
+                continue
             if file_ext in EXCLUDED_EXTENSIONS or file in EXCLUDED_FILES:
                 continue
             file_list.append(os.path.join(root, file))
@@ -197,8 +210,8 @@ async def scan_directory_without_callback(target_dir, rules, EXCLUDED_FILES, EXC
     file_collection_start = time.time()
     for root, _, files in os.walk(target_dir):
         for file in files:           
-            file_ext = file.split(".")[-1].lower()
-            if file_ext in EXCLUDED_EXTENSIONS or file in EXCLUDED_FILES:
+            file_ext = get_full_extension(file)
+            if is_extension_excluded(file_ext, EXCLUDED_EXTENSIONS) or file in EXCLUDED_FILES:
                 continue
             file_list.append(os.path.join(root, file))
 
