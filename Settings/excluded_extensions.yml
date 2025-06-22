@@ -1,4 +1,6 @@
 excluded_extensions:
+- '*tar.gz'
+- '*tar.bz2'
 - png
 - jpg
 - jpeg
@@ -30,5 +32,3 @@ excluded_extensions:
 - zip
 - rar
 - 7z
-- tar.gz
-- tar.bz2
