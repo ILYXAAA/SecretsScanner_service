@@ -181,12 +181,15 @@ async def download_repo_azure(repo_url, commit_id, extract_path):
         
         # Специальная обработка для PAT токена
         if auth_method == 'pat' and pat:
-            # Кодируем PAT токен в base64 для Basic аутентификации
+            # Встраиваем PAT токен в URL
+            parsed_url = urlparse(api_url)
+            pat_api_url = f"{parsed_url.scheme}://:{pat}@{parsed_url.netloc}{parsed_url.path}"
+            # И также добавляем в заголовки
             token_b64 = base64.b64encode((':' + pat).encode('ascii')).decode('ascii')
             headers = {
                 'Authorization': f'Basic {token_b64}'
             }
-            response = requests.get(api_url, params=params, headers=headers, stream=True, verify=False)
+            response = requests.get(pat_api_url, params=params, headers=headers, stream=True, verify=False)
         else:
             # Для других методов аутентификации используем обычный подход
             auth = get_auth(auth_method)
