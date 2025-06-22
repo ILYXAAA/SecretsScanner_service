@@ -30,6 +30,15 @@ class ColoredFormatter(logging.Formatter):
         colored_record.levelname = f"{log_color}{record.levelname}{self.COLORS['RESET']}"
         return super().format(colored_record)
 
+def get_accurate_model_memory():
+    """Get actual loaded model memory usage"""
+    try:
+        from app.model_loader import SecretClassifier
+        classifier = SecretClassifier()
+        return classifier.get_model_memory_usage()
+    except Exception as e:
+        return {'error': str(e)}
+
 def setup_logging():
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
@@ -299,17 +308,35 @@ def print_startup_info():
     logging.info(f"Python: {sys.version.split()[0]}")
     logging.info(f"CPU Count: {multiprocessing.cpu_count()}")
     print("=" * 60)
-
+    print("")
+    
+    # Model memory information
+    try:
+        print("=" * 60)
+        print("MODEL MEMORY (ACTUAL):")
+        print("=" * 60)
+        model_stats = get_accurate_model_memory()
+        if 'error' not in model_stats:
+            logging.info(f"Vectorizer: {model_stats.get('vectorizer_mb', 0):.1f} MB")
+            logging.info(f"Model: {model_stats.get('model_mb', 0):.1f} MB")
+            logging.info(f"Vocabulary: {model_stats.get('vocabulary_size', 0):,} terms")
+            logging.info(f"Total per process: {model_stats.get('total_mb', 0):.1f} MB")
+            logging.info(f"Estimated for {max_workers} workers: {model_stats.get('total_mb', 0) * int(max_workers):.1f} MB")
+            print("=" * 60)
+        else:
+            logging.warning("Model not loaded yet - will load on first scan")
+    except Exception as e:
+        logging.warning(f"Model memory check failed: {e}")
 def main():
     """Main startup function"""
     setup_logging()
-    
+    print("=" * 60)
     print("Secret Scanner Service Startup")
-    print("=" * 40)
+    print("=" * 60)
     
     try:
         # Check dependencies
-        print("\nChecking Python dependencies...")
+        logging.info("Checking Python dependencies...")
         if not check_dependencies():
             logging.error("Required dependencies not installed")
             logging.info("Please run: pip install -r requirements.txt")
@@ -327,8 +354,10 @@ def main():
         setup_signal_handlers()
         
         config = get_server_config()
-        
-        print("\nStarting HTTP server...")
+        print("")
+        print("=" * 60)
+        print("Starting HTTP server...")
+        print("=" * 60)
         uvicorn.run("app.main:app", **config)
         
     except KeyboardInterrupt:

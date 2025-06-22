@@ -5,6 +5,7 @@ import random
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
+import pickle
 import logging
 from logging.handlers import RotatingFileHandler
 
@@ -75,6 +76,28 @@ class SecretClassifier:
         
         joblib.dump(self.model, self.MODEL_PATH)
         joblib.dump(self.vectorizer, self.VECTORIZER_PATH)
+
+    def get_model_memory_usage(self):
+        """Get accurate memory usage of loaded model components"""
+        memory_info = {}
+        
+        if self.model is not None:
+            # Serialize model to measure size
+            model_bytes = pickle.dumps(self.model)
+            memory_info['model_mb'] = len(model_bytes) / (1024 * 1024)
+        
+        if self.vectorizer is not None:
+            # Serialize vectorizer to measure size
+            vectorizer_bytes = pickle.dumps(self.vectorizer)
+            memory_info['vectorizer_mb'] = len(vectorizer_bytes) / (1024 * 1024)
+            
+            # Additional vectorizer details
+            if hasattr(self.vectorizer, 'vocabulary_'):
+                memory_info['vocabulary_size'] = len(self.vectorizer.vocabulary_)
+        
+        memory_info['total_mb'] = memory_info.get('model_mb', 0) + memory_info.get('vectorizer_mb', 0)
+        
+        return memory_info
 
     def filter_secrets(self, secrets: list[dict]) -> list[dict]:
         classification_start = time.time()
