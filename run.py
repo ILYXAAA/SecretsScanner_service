@@ -25,9 +25,10 @@ class ColoredFormatter(logging.Formatter):
     }
     
     def format(self, record):
+        colored_record = logging.makeLogRecord(record.__dict__)
         log_color = self.COLORS.get(record.levelname, self.COLORS['RESET'])
-        record.levelname = f"{log_color}{record.levelname}{self.COLORS['RESET']}"
-        return super().format(record)
+        colored_record.levelname = f"{log_color}{record.levelname}{self.COLORS['RESET']}"
+        return super().format(colored_record)
 
 def setup_logging():
     logger = logging.getLogger()
