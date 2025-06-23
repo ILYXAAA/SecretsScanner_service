@@ -72,31 +72,14 @@ def is_extension_excluded(file_ext, EXCLUDED_EXTENSIONS):
 async def _analyze_file(file_path, rules, target_dir, max_secrets=100, max_line_length=7000, FALSE_POSITIVE_RULES=[]):
     """Асинхронная функция для анализа файла с ограничениями"""
     results = []
+    all_secrets = []
     secrets_found = 0
-    
+
     try:
         with open(file_path, "r", encoding="UTF-8", errors="ignore") as f:
             lines = f.readlines()
 
         for line_num, line in enumerate(lines, start=1):
-            if secrets_found >= max_secrets:
-                hashed_secrets = hashlib.md5(line.encode('utf-8')).hexdigest()
-                all_secrets_string = ""
-                for item in results:
-                    all_secrets_string += item["secret"] + "\n"
-                hashed_secrets = hashlib.md5(all_secrets_string.encode('utf-8')).hexdigest()
-                results = []
-                results.append({
-                    "path": file_path.replace(target_dir, "").replace("\\", "/"),
-                    "line": line_num,
-                    "secret": f"ФАЙЛ НЕ СКАНИРОВАЛСЯ ПОЛНОСТЬЮ т.к. при анализе выявлено более {max_secrets} секретов. Проверьте файл вручную. Хеш всех секретов: {hashed_secrets}",
-                    "context": f"Найдено секретов: {secrets_found}\nСписок найденных секретов ниже:\n{all_secrets_string}",
-                    "severity": "High",
-                    "Type": "Too Many Secrets"
-                })
-                logger.warning(f"Прервано сканирование {file_path} - найдено более {max_secrets} секретов")
-                break
-            
             if len(line) > max_line_length:
                 hashed_line = hashlib.md5(line.encode('utf-8')).hexdigest()
                 results.append({
@@ -108,14 +91,14 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=100, max_line_
                     "Type": "Too Long Line"
                 })
                 continue
-            
+
             for rule in rules:
                 match = re.search(rule["pattern"], line)
                 if match:
                     secret = match.group(0)
                     context = line.strip()
                     if not check_false_positive(secret, context, FALSE_POSITIVE_RULES):
-                        results.append({
+                        all_secrets.append({
                             "path": file_path.replace(target_dir, "").replace("\\", "/"),
                             "line": line_num,
                             "secret": secret,
@@ -124,14 +107,26 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=100, max_line_
                             "Type": rule.get("message", "Unknown")
                         })
                         secrets_found += 1
-                    
-                    if secrets_found >= max_secrets:
-                        break
-                        
+
+        if secrets_found > max_secrets:
+            all_secrets_string = "\n".join([s["secret"] for s in all_secrets])
+            hashed_secrets = hashlib.md5(all_secrets_string.encode('utf-8')).hexdigest()
+            results = [{
+                "path": file_path.replace(target_dir, "").replace("\\", "/"),
+                "line": 0,
+                "secret": f"ФАЙЛ НЕ ВЫВЕДЕН ПОЛНОСТЬЮ т.к. найдено более {max_secrets} секретов. Проверьте файл вручную. Хеш всех секретов: {hashed_secrets}",
+                "context": f"Найдено секретов: {secrets_found}\nСписок найденных секретов ниже:\n{all_secrets_string}",
+                "severity": "High",
+                "Type": "Too Many Secrets"
+            }]
+        else:
+            results.extend(all_secrets)
+
     except Exception as error:
         logger.error(f"Error: {str(error)} — ошибка при обработке {file_path}")
-    
+
     return results
+
 
 async def search_secrets(file_path, rules, target_dir, max_secrets=100, max_line_length=7000, FALSE_POSITIVE_RULES=[]):
     """Простая обертка для анализа файла"""
