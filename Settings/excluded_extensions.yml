@@ -31,4 +31,4 @@ excluded_extensions:
 - "*gz"
 - "*zip"
 - "*rar"
-- "*7z
+- "*7z"
