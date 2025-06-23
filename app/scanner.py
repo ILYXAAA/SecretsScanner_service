@@ -69,7 +69,7 @@ def is_extension_excluded(file_ext, EXCLUDED_EXTENSIONS):
             return True
     return False
 
-async def _analyze_file(file_path, rules, target_dir, max_secrets=100, max_line_length=15_000, FALSE_POSITIVE_RULES=[]):
+async def _analyze_file(file_path, rules, target_dir, max_secrets=50, max_line_length=15_000, FALSE_POSITIVE_RULES=[]):
     """Асинхронная функция для анализа файла с ограничениями"""
     results = []
     all_secrets = []
@@ -128,7 +128,7 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=100, max_line_
     return results
 
 
-async def search_secrets(file_path, rules, target_dir, max_secrets=100, max_line_length=15_000, FALSE_POSITIVE_RULES=[]):
+async def search_secrets(file_path, rules, target_dir, max_secrets=50, max_line_length=15_000, FALSE_POSITIVE_RULES=[]):
     """Простая обертка для анализа файла"""
     return await _analyze_file(file_path, rules, target_dir, max_secrets, max_line_length, FALSE_POSITIVE_RULES)
 
@@ -163,7 +163,7 @@ async def scan_directory(request, target_dir, rules, EXCLUDED_FILES, EXCLUDED_EX
         
         # Process batch concurrently
         batch_tasks = [
-            search_secrets(file_path, rules, target_dir, max_secrets=100, max_line_length=15_000, FALSE_POSITIVE_RULES=FALSE_POSITIVE_RULES)
+            search_secrets(file_path, rules, target_dir, max_secrets=50, max_line_length=15_000, FALSE_POSITIVE_RULES=FALSE_POSITIVE_RULES)
             for file_path in batch
         ]
         
@@ -219,7 +219,7 @@ async def scan_directory_without_callback(target_dir, rules, EXCLUDED_FILES, EXC
         batch = file_list[i:i + batch_size]
         
         batch_tasks = [
-            search_secrets(file_path, rules, target_dir, max_secrets=100, max_line_length=15_000, FALSE_POSITIVE_RULES=FALSE_POSITIVE_RULES)
+            search_secrets(file_path, rules, target_dir, max_secrets=50, max_line_length=15_000, FALSE_POSITIVE_RULES=FALSE_POSITIVE_RULES)
             for file_path in batch
         ]
         
