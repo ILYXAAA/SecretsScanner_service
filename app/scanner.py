@@ -104,6 +104,7 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=50, max_line_l
                             "secret": secret,
                             "context": context,
                             "severity": "",
+                            "confidence": 1.0,
                             "Type": rule.get("message", "Unknown")
                         })
                         secrets_found += 1

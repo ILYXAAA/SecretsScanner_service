@@ -104,8 +104,8 @@ class SecretClassifier:
         """
         Классифицирует каждый элемент словаря в списке secrets по полю "secret".
         Заполняет поле "severity":
-        - "High" для уверенных секретов и неуверенных
-        - "Potential" для не секретов с высокой уверенностью
+        - "High" для уверенных секретов (confidence > 0.7)
+        - "Potential" для неуверенных предсказаний или специальных строк
         
         Возвращает список словарей с обновленным полем "severity".
         """
@@ -124,22 +124,28 @@ class SecretClassifier:
             probs = self.model.predict_proba(X_vec)
 
             for item, pred, proba in zip(secrets, preds, probs):
-                if not item.get("severity"):  # Only update if not already set
-                    confidence = proba[pred]
-                    if pred == 1:
-                        # Уверен что секрет
+                confidence = proba[1]  # вероятность класса 1 (что это секрет)
+                
+                #logger.info(f"Secret: {item['secret'][:20]}... | Confidence: {confidence:.3f} | Pred: {pred}")
+                
+                if "СТРОКА НЕ СКАНИРОВАЛАСЬ т.к. её длина" in item["secret"] or "ФАЙЛ НЕ ВЫВЕДЕН ПОЛНОСТЬЮ т.к." in item["secret"]:
+                    item["confidence"] = 0.00
+                    item["severity"] = "Potential"
+                else:
+                    item["confidence"] = round(confidence, 2)
+                    
+                    if confidence > 0.7:
                         item["severity"] = "High"
+                        #logger.info(f"Set HIGH for confidence {confidence:.3f}")
                     else:
-                        if confidence > 0.80:
-                            # Уверен что не секрет
-                            item["severity"] = "Potential"
-                        else:
-                            # Не уверен
-                            item["severity"] = "High"
+                        item["severity"] = "Potential"
+                        #logger.info(f"Set POTENTIAL for confidence {confidence:.3f}")
+                                
         except Exception as e:
             logger.error(f"Ошибка классификации: {e}")
             # Fallback: mark all as High severity
             for item in secrets:
+                item["confidence"] = 1.00
                 if not item.get("severity"):
                     item["severity"] = "High"
 
