@@ -15,7 +15,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        RotatingFileHandler('secrets_scanner_service.log', maxBytes=10*1024*1024, backupCount=5),
+        RotatingFileHandler('secrets_scanner_service.log', maxBytes=10*1024*1024, backupCount=5, encoding='utf-8'),
         logging.StreamHandler()  # Также выводить в консоль
     ]
 )
