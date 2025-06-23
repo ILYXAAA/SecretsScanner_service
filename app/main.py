@@ -64,24 +64,26 @@ async def lifespan(app: FastAPI):
     logger.warning("Начинаю остановку сервиса...")
     
     try:
-        # Cancel all worker tasks
+        # Cancel all worker tasks immediately
         for task in worker_tasks:
             if not task.done():
                 task.cancel()
         
-        # Wait for tasks to complete with timeout
+        # Give tasks minimal time to cleanup
         if worker_tasks:
             try:
                 await asyncio.wait_for(
                     asyncio.gather(*worker_tasks, return_exceptions=True),
-                    timeout=5.0
+                    timeout=2.0
                 )
             except asyncio.TimeoutError:
-                logger.error("Timeout при остановке воркеров")
+                logger.warning("Timeout при остановке воркеров - принудительное завершение")
         
-        # Cleanup executors
+        # Cleanup executors with timeout
         try:
-            await cleanup_executors()
+            await asyncio.wait_for(cleanup_executors(), timeout=3.0)
+        except asyncio.TimeoutError:
+            logger.error("Timeout при очистке executors")
         except Exception as e:
             logger.error(f"Ошибка при очистке executors: {e}")
         

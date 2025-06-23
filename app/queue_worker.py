@@ -49,7 +49,8 @@ async def start_worker():
     """Worker that processes requests concurrently"""
     while True:
         try:
-            item = await task_queue.get()
+            # Добавляем timeout для избежания вечного ожидания
+            item = await asyncio.wait_for(task_queue.get(), timeout=5.0)
             
             # Check item type
             if isinstance(item, tuple) and len(item) == 3:
@@ -67,6 +68,12 @@ async def start_worker():
                 asyncio.create_task(process_request_async(request, commit))
             
             task_queue.task_done()
+        except asyncio.TimeoutError:
+            # Периодически проверяем, не нужно ли завершиться
+            continue
+        except asyncio.CancelledError:
+            logger.info("Worker получил сигнал отмены")
+            break
         except Exception as e:
             logger.error(f"Worker error: {e}")
             await asyncio.sleep(1)
@@ -403,13 +410,18 @@ async def cleanup_executors():
     """Cleanup executors on shutdown"""
     try:
         logger.info("Очистка thread pool...")
-        download_executor.shutdown(wait=False)  # Don't wait to avoid hanging
+        download_executor.shutdown(wait=True, cancel_futures=True)
     except Exception as e:
         logger.error(f"Ошибка при остановке download_executor: {e}")
     
     try:
         logger.info("Очистка process pool...")
-        model_executor.shutdown(wait=False)  # Don't wait to avoid hanging
+        # Для Windows - принудительное завершение процессов
+        if hasattr(model_executor, '_processes'):
+            for p in model_executor._processes.values():
+                if p.is_alive():
+                    p.terminate()
+        model_executor.shutdown(wait=False)
     except Exception as e:
         logger.error(f"Ошибка при остановке model_executor: {e}")
     

@@ -279,15 +279,16 @@ def get_server_config():
 def setup_signal_handlers():
     """Setup graceful shutdown signal handlers"""
     def signal_handler(signum, frame):
-        print(f"\nReceived signal {signum} ({signal.Signals(signum).name})")
+        print(f"\nReceived signal {signum}")
         print("Initiating graceful shutdown...")
+        # Позволяем uvicorn обработать shutdown gracefully
         sys.exit(0)
     
-    signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
-    signal.signal(signal.SIGTERM, signal_handler)  # Termination request
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
     
-    if hasattr(signal, 'SIGHUP'):  # Unix only
-        signal.signal(signal.SIGHUP, signal_handler)  # Hangup
+    if hasattr(signal, 'SIGHUP'):
+        signal.signal(signal.SIGHUP, signal_handler)
 
 def print_startup_info():
     """Print startup information"""
