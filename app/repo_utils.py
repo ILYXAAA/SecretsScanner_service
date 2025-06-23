@@ -161,113 +161,61 @@ async def download_repo_azure(repo_url, commit_id, extract_path):
         server, collection, project, repo_name = parse_azure_devops_url(repo_url)
     except ValueError as e:
         logger.error(f"Ошибка парсинга URL '{repo_url}': {e}")
-        return "", f"Ошибка парсинга URL '{repo_url}': {e}"
+        return False
 
-    # Используем правильный endpoint для скачивания архива как в main.py
+    base_url = f"https://{server}/{collection}"
+    api_url = f"{base_url}/{project}/_apis/git/repositories/{repo_name}/items"
+
+    params = {
+        "scopePath": "/",
+        "versionDescriptor.version": commit_id,
+        "versionDescriptor.versionType": "commit",
+        "$format": "zip",
+        "download": "true",
+        "api-version": "5.1-preview.1"
+    }
+
     for auth_method in auth_methods:
         download_start = time.time()
         logger.info(f"Скачиваем '{repo_name}' --> {commit_id[:7]}... auth_method: {auth_method}")
         
         # Специальная обработка для PAT токена
         if auth_method == 'pat' and pat:
-            zip_url = f"https://:{pat}@{server}/{collection}/{project}/_git/{repo_name}/archive/{commit_id}.zip"
+            # Встраиваем PAT токен в URL
+            parsed_url = urlparse(api_url)
+            pat_api_url = f"{parsed_url.scheme}://:{pat}@{parsed_url.netloc}{parsed_url.path}"
+            # И также добавляем в заголовки
             token_b64 = base64.b64encode((':' + pat).encode('ascii')).decode('ascii')
             headers = {
                 'Authorization': f'Basic {token_b64}'
             }
-            response = requests.get(zip_url, headers=headers, stream=True, verify=False)
+            response = requests.get(pat_api_url, params=params, headers=headers, stream=True, verify=False)
         else:
-            # Для других методов аутентификации
+            # Для других методов аутентификации используем обычный подход
             auth = get_auth(auth_method)
-            zip_url = f"https://{server}/{collection}/{project}/_git/{repo_name}/archive/{commit_id}.zip"
-            response = requests.get(zip_url, auth=auth, stream=True, verify=False)
+            response = requests.get(api_url, params=params, auth=auth, stream=True, verify=False)
 
         if response.status_code == 200:
-            # Проверяем, что получили ZIP архив, а не JSON
-            content_type = response.headers.get('content-type', '').lower()
-            if 'application/zip' in content_type or 'application/octet-stream' in content_type:
-                try:
-                    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as temp_file:
-                        temp_zip_path = temp_file.name
-                        for chunk in response.iter_content(chunk_size=8192):
-                            if chunk:
-                                temp_file.write(chunk)
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as temp_file:
+                    temp_zip_path = temp_file.name
+                    temp_file.write(response.content)
 
-                    with zipfile.ZipFile(temp_zip_path) as zip_file:
-                        safe_extract(zip_file, extract_path)
-                    
-                    download_time = time.time() - download_start
-                    logger.info(f"Репозиторий успешно распакован в: {extract_path} (время: {download_time:.2f}с)")
-                    os.unlink(temp_zip_path)
-                    return extract_path, "Success"
-                
-                except Exception as e:
-                    logger.error(f"Ошибка при распаковке архива: {e}")
-                    return_string = f"Ошибка при распаковке архива: {e}"
-                    if 'temp_zip_path' in locals():
-                        try:
-                            os.unlink(temp_zip_path)
-                        except:
-                            pass
-                    return "", return_string
-            else:
-                # Получили JSON вместо ZIP - попробуем альтернативный endpoint
-                logger.warning(f"Получен {content_type} вместо ZIP архива, пробуем альтернативный метод")
-                
-                # Попробуем использовать items API с правильными параметрами
-                if auth_method == 'pat' and pat:
-                    api_url = f"https://:{pat}@{server}/{collection}/{project}/_apis/git/repositories/{repo_name}/items"
-                    headers = {
-                        'Authorization': f'Basic {token_b64}'
-                    }
-                    auth_obj = None
-                else:
-                    api_url = f"https://{server}/{collection}/{project}/_apis/git/repositories/{repo_name}/items"
-                    headers = {}
-                    auth_obj = get_auth(auth_method)
-                
-                params = {
-                    "scopePath": "/",
-                    "versionDescriptor.version": commit_id,
-                    "versionDescriptor.versionType": "commit",
-                    "$format": "zip",
-                    "download": "true",
-                    "api-version": "7.1-preview.1"
-                }
-                
-                alt_response = requests.get(api_url, params=params, headers=headers, auth=auth_obj, stream=True, verify=False)
-                if alt_response.status_code == 200:
-                    alt_content_type = alt_response.headers.get('content-type', '').lower()
-                    if 'application/zip' in alt_content_type or 'application/octet-stream' in alt_content_type:
-                        try:
-                            with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as temp_file:
-                                temp_zip_path = temp_file.name
-                                for chunk in alt_response.iter_content(chunk_size=8192):
-                                    if chunk:
-                                        temp_file.write(chunk)
-
-                            with zipfile.ZipFile(temp_zip_path) as zip_file:
-                                safe_extract(zip_file, extract_path)
-                            
-                            download_time = time.time() - download_start
-                            logger.info(f"Репозиторий успешно распакован в: {extract_path} (время: {download_time:.2f}с)")
-                            os.unlink(temp_zip_path)
-                            return extract_path, "Success"
-                        
-                        except Exception as e:
-                            logger.error(f"Ошибка при распаковке архива (альтернативный метод): {e}")
-                            if 'temp_zip_path' in locals():
-                                try:
-                                    os.unlink(temp_zip_path)
-                                except:
-                                    pass
-                continue
-        else:
-            logger.error(f"Ошибка при скачивании {repo_name} с методом {auth_method}: {response.status_code} - {response.text}")
-            continue
+                with zipfile.ZipFile(temp_zip_path) as zip_file:
+                    zip_file.extractall(extract_path)
+                    # safe_extract(zip_file, extract_path)
+                download_time = time.time() - download_start
+                logger.info(f"Репозиторий успешно распакован в: {extract_path} (время: {download_time:.2f}с)")
+                os.unlink(temp_zip_path)
+                return extract_path, "Success"
             
-    logger.error(f"Все методы аутентификации не сработали для скачивания {repo_name}")
-    return_string = f"Все методы аутентификации не сработали для скачивания {repo_name}"
+            except Exception as e:
+                logger.error(f"Ошибка при распаковке архива: {e}")
+                return_string = f"Ошибка при распаковке архива: {e}"
+                return "", return_string
+            
+    logger.error(f"Ошибка при скачивании {repo_name}: {response.status_code}")
+    return_string = f"Ошибка при скачивании {repo_name}: {response.status_code}"
     return "", return_string
 
 async def download_github_repo(repo_url, commit_id, extract_path):
@@ -324,31 +272,16 @@ async def check_ref_and_resolve_azure(repo_url: str, ref_type: str, ref: str):
     message = ""
 
     for auth_method in auth_methods:
+        auth = get_auth(auth_method)
         logger.info(f"Try to resolve {repo_url} --> {ref_type}. auth_method={auth_method}")
 
         try:
             server, collection, project, repository = parse_azure_devops_url(repo_url)
             base_api_url = f"https://{server}/{collection}/{project}/_apis/git/repositories/{repository}"
 
-            # Настройка аутентификации в зависимости от метода
-            if auth_method == 'pat' and pat:
-                # Встраиваем PAT токен в URL
-                pat_base_api_url = f"https://:{pat}@{server}/{collection}/{project}/_apis/git/repositories/{repository}"
-                # Создаем заголовок авторизации
-                token_b64 = base64.b64encode((':' + pat).encode('ascii')).decode('ascii')
-                headers = {
-                    'Authorization': f'Basic {token_b64}'
-                }
-                auth_obj = None
-                current_base_url = pat_base_api_url
-            else:
-                auth_obj = get_auth(auth_method)
-                headers = {}
-                current_base_url = base_api_url
-
             if ref_type.lower() == "branch":
-                url = f"{current_base_url}/refs?filter=heads/{ref}&api-version=5.1-preview.1"
-                response = requests.get(url, auth=auth_obj, headers=headers, verify=False, timeout=20)
+                url = f"{base_api_url}/refs?filter=heads/{ref}&api-version=5.1-preview.1"
+                response = requests.get(url, auth=auth, verify=False, timeout=20)
                 if response.status_code not in [200, 201, 202, 203]:
                     if response.status_code in [401, 403]:
                         message = f"Access Denied: [{response.status_code}]. Проверьте, что у PAT-токена/NTLM Auth есть доступ к репозиторию."
@@ -364,8 +297,8 @@ async def check_ref_and_resolve_azure(repo_url: str, ref_type: str, ref: str):
 
             elif ref_type.lower() == "tag":
                 # Сначала получаем objectId тега
-                url = f"{current_base_url}/refs?filter=tags/{ref}&api-version=5.1-preview.1"
-                response = requests.get(url, auth=auth_obj, headers=headers, verify=False, timeout=20)
+                url = f"{base_api_url}/refs?filter=tags/{ref}&api-version=5.1-preview.1"
+                response = requests.get(url, auth=auth, verify=False, timeout=20)
                 if response.status_code not in [200, 201, 202, 203]:
                     if response.status_code in [401, 403]:
                         message = f"Access Denied: [{response.status_code}]. Проверьте, что у PAT-токена/NTLM Auth есть доступ к репозиторию."
@@ -380,8 +313,8 @@ async def check_ref_and_resolve_azure(repo_url: str, ref_type: str, ref: str):
                 tag_object_id = data["value"][0]["objectId"]
 
                 # Пробуем получить аннотированный тег
-                tag_url = f"{current_base_url}/annotatedtags/{tag_object_id}?api-version=6.1-preview"
-                tag_response = requests.get(tag_url, auth=auth_obj, headers=headers, verify=False, timeout=20)
+                tag_url = f"{base_api_url}/annotatedtags/{tag_object_id}?api-version=6.1-preview"
+                tag_response = requests.get(tag_url, auth=auth, verify=False, timeout=20)
 
                 if tag_response.status_code == 200:
                     tag_data = tag_response.json()
@@ -395,8 +328,8 @@ async def check_ref_and_resolve_azure(repo_url: str, ref_type: str, ref: str):
                     return True, tag_object_id, "Не удалось получить аннотированный тег, возвращён objectId"
 
             elif ref_type.lower() == "commit":
-                url = f"{current_base_url}/commits/{ref}?api-version=5.1-preview.1"
-                response = requests.get(url, auth=auth_obj, headers=headers, verify=False, timeout=20)
+                url = f"{base_api_url}/commits/{ref}?api-version=5.1-preview.1"
+                response = requests.get(url, auth=auth, verify=False, timeout=20)
                 if response.status_code == 200:
                     data = response.json()
                     commit_id = data.get("commitId")
@@ -404,7 +337,7 @@ async def check_ref_and_resolve_azure(repo_url: str, ref_type: str, ref: str):
                         return True, commit_id, ""
                     return False, None, "Коммит не найден"
                 else:
-                    message = f"Коммит не найден или ошибка доступа: {response.status_code}"
+                    message = ""
                     continue
             else:
                 return False, None, f"❌ Неверный тип ref: {ref_type}"
@@ -412,7 +345,7 @@ async def check_ref_and_resolve_azure(repo_url: str, ref_type: str, ref: str):
         except Exception as e:
             message = f"Ошибка при проверке Azure DevOps ссылки: {e}"
             logger.error(f"{message}")
-            continue
+            return False, None, message
 
     return False, None, message
 
