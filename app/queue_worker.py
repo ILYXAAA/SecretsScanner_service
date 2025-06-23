@@ -46,30 +46,56 @@ async def add_multi_scan_to_queue(multi_scan_items: list, commits: list):
     logger.info(f"Мультисканирование {len(multi_scan_items)} проектов поставлено в очередь")
 
 async def start_worker():
-    """Worker that processes requests concurrently"""
+    """Worker that processes requests concurrently with timeout protection"""
+    worker_id = id(asyncio.current_task())
+    logger.info(f"Worker {worker_id} started")
+    
     while True:
         try:
-            item = await task_queue.get()
+            # Add timeout to prevent infinite waiting
+            item = await asyncio.wait_for(task_queue.get(), timeout=60.0)
             
-            # Check item type
+            # Check item type with better error handling
             if isinstance(item, tuple) and len(item) == 3:
                 if item[0] == "multi_scan":
                     # Multi-scan processing
                     _, multi_scan_items, commits = item
-                    asyncio.create_task(process_multi_scan_sequence(multi_scan_items, commits))
+                    await asyncio.wait_for(
+                        process_multi_scan_sequence(multi_scan_items, commits),
+                        timeout=1800//2  # 15 minutes max
+                    )
                 elif item[0] == "local_scan":
                     # Local scan processing
                     _, request_dict, zip_content = item
-                    asyncio.create_task(process_local_scan_async(request_dict, zip_content))
+                    await asyncio.wait_for(
+                        process_local_scan_async(request_dict, zip_content),
+                        timeout=1800//2  # 15 minutes max
+                    )
             else:
                 # Single scan processing
                 request, commit = item
-                asyncio.create_task(process_request_async(request, commit))
+                await asyncio.wait_for(
+                    process_request_async(request, commit),
+                    timeout=1800//2  # 15 minutes max
+                )
             
             task_queue.task_done()
+            
+        except asyncio.TimeoutError:
+            logger.error(f"Worker {worker_id} timeout - task took too long")
+            task_queue.task_done()
+        except asyncio.CancelledError:
+            logger.info(f"Worker {worker_id} cancelled - shutting down")
+            break
         except Exception as e:
-            logger.error(f"Worker error: {e}")
+            logger.error(f"Worker {worker_id} error: {e}")
+            try:
+                task_queue.task_done()
+            except:
+                pass
             await asyncio.sleep(1)
+    
+    logger.info(f"Worker {worker_id} stopped")
 
 async def process_local_scan_async(request_dict: dict, zip_content: bytes):
     """Process uploaded zip file locally"""
@@ -266,20 +292,33 @@ def download_repo_sync(repo_url: str, commit: str, temp_dir: str) -> Tuple[str, 
         return result
     finally:
         loop.close()
-
+        
 def scan_repo_with_model(repo_path: str, project_name: str, request_dict: dict) -> Tuple[list, int]:
-    """Process scanning and model inference in separate process"""
+    """Process scanning and model inference in separate process with timeout protection"""
     import sys
     import os
     import asyncio
+    import threading
+    import time
     
-    # Add the project root to Python path
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(current_dir)
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
+    # Cross-platform timeout implementation
+    timeout_flag = threading.Event()
+    
+    def timeout_monitor():
+        if not timeout_flag.wait(1500):  # 25 minutes timeout
+            logger.error(f"Process timeout for {project_name}")
+            os._exit(1)  # Force exit on timeout
+    
+    timeout_thread = threading.Thread(target=timeout_monitor, daemon=True)
+    timeout_thread.start()
     
     try:
+        # Add the project root to Python path
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(current_dir)
+        if project_root not in sys.path:
+            sys.path.insert(0, project_root)
+        
         from app.scanner import scan_repo_without_callback
         from app.model_loader import get_model_instance, filter_secrets_in_process
         from app.models import ScanRequest
@@ -290,14 +329,22 @@ def scan_repo_with_model(repo_path: str, project_name: str, request_dict: dict) 
         # Perform scanning without model (in process)
         results, file_count = asyncio.run(scan_repo_without_callback(request, repo_path, project_name))
         
-        # Apply model filtering
-        filtered_results = filter_secrets_in_process(results)
+        # Apply model filtering with timeout protection
+        try:
+            filtered_results = filter_secrets_in_process(results)
+        except Exception as model_error:
+            logger.error(f"Model filtering failed: {model_error}")
+            # Return unfiltered results with High severity
+            for result in results:
+                result["severity"] = "High"
+            filtered_results = results
         
+        timeout_flag.set()  # Cancel timeout
         return filtered_results, file_count
         
     except Exception as e:
         logger.error(f"Ошибка в процессе сканирования: {e}")
-        # Return empty results with error info
+        timeout_flag.set()  # Cancel timeout
         return [{"error": str(e), "path": "process_error", "severity": "High", "Type": "Process Error"}], 0
 
 async def process_request_async(request: ScanRequest, commit: str):
@@ -400,17 +447,42 @@ async def send_error_callback(callback_url: str, error_message: str):
 
 # Cleanup function for graceful shutdown
 async def cleanup_executors():
-    """Cleanup executors on shutdown"""
+    """Cleanup executors on shutdown with proper timeout handling"""
     try:
-        logger.info("Очистка thread pool...")
-        download_executor.shutdown(wait=False)  # Don't wait to avoid hanging
-    except Exception as e:
-        logger.error(f"Ошибка при остановке download_executor: {e}")
+        logger.info("Начинаю остановку executors...")
+        
+        # Shutdown download executor with timeout
+        try:
+            logger.info("Остановка download executor...")
+            download_executor.shutdown(wait=False)
+            
+            # Wait briefly for graceful shutdown
+            loop = asyncio.get_event_loop()
+            await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: None), 
+                timeout=2.0
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Download executor shutdown timeout")
+        except Exception as e:
+            logger.error(f"Ошибка при остановке download_executor: {e}")
+        
+        # Shutdown model executor with timeout
+        try:
+            logger.info("Остановка model executor...")
+            model_executor.shutdown(wait=False)
+            
+            # Force terminate any hanging processes
+            for process in getattr(model_executor, '_processes', {}).values():
+                if process.is_alive():
+                    process.terminate()
+                    
+            await asyncio.sleep(1)  # Give processes time to terminate
+            
+        except Exception as e:
+            logger.error(f"Ошибка при остановке model_executor: {e}")
     
-    try:
-        logger.info("Очистка process pool...")
-        model_executor.shutdown(wait=False)  # Don't wait to avoid hanging
     except Exception as e:
-        logger.error(f"Ошибка при остановке model_executor: {e}")
-    
-    logger.info("Cleanup завершен")
+        logger.error(f"Общая ошибка cleanup: {e}")
+    finally:
+        logger.info("Cleanup executors завершен")
