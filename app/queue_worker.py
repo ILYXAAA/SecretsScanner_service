@@ -10,7 +10,11 @@ from typing import Tuple
 from dotenv import load_dotenv
 import zipfile
 import time
+import gzip
+import base64
 import logging
+import json
+import traceback
 from logging.handlers import RotatingFileHandler
 
 # Setup logging to file
@@ -382,20 +386,152 @@ async def process_request_async(request: ScanRequest, commit: str):
         await loop.run_in_executor(download_executor, delete_dir, temp_dir)
 
 async def send_callback(callback_url: str, payload: dict):
-    """Send callback with retry logic"""
+    """Send callback with compression support"""
+    
+    project_name = payload.get("ProjectName", "unknown")
+    results_count = len(payload.get("Results", []))
+    
+    # Сериализуем payload
+    payload_json = json.dumps(payload, ensure_ascii=False)
+    original_size = len(payload_json.encode('utf-8'))
+    
+    # Сжимаем данные
+    compressed_data = gzip.compress(payload_json.encode('utf-8'))
+    compressed_size = len(compressed_data)
+    
+    # Кодируем в base64 для передачи
+    compressed_b64 = base64.b64encode(compressed_data).decode('ascii')
+    
+    # Создаем сжатый payload
+    compressed_payload = {
+        "compressed": True,
+        "data": compressed_b64,
+        "original_size": original_size,
+        "compressed_size": compressed_size
+    }
+    
+    compressed_json = json.dumps(compressed_payload)
+    final_size = len(compressed_json.encode('utf-8'))
+    
+    compression_ratio = (1 - final_size / original_size) * 100
+    
+    logger.info(f"📤 Отправляем callback для {project_name}")
+    logger.info(f"   URL: {callback_url}")
+    logger.info(f"   Оригинал: {original_size / 1024:.2f} KB")
+    logger.info(f"   Сжато: {final_size / 1024:.2f} KB")
+    logger.info(f"   Экономия: {compression_ratio:.1f}%")
+    logger.info(f"   Результатов: {results_count}")
+    
     max_retries = 3
+    
     for attempt in range(max_retries):
+        start_time = time.time()
+        logger.info(f"🔄 Попытка {attempt + 1}/{max_retries}")
+        
         try:
-            timeout = aiohttp.ClientTimeout(total=30)
+            timeout = aiohttp.ClientTimeout(
+                total=60,
+                connect=10,
+                sock_read=30
+            )
+            
+            headers = {
+                'Content-Type': 'application/json; charset=utf-8',
+                'User-Agent': 'SecretsScanner-Service/1.0',
+                'X-Compressed': 'gzip-base64'  # Указываем, что данные сжаты
+            }
+            
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(callback_url, json=payload) as response:
+                logger.info(f"🔗 Устанавливаем соединение с {callback_url}")
+                
+                async with session.post(
+                    callback_url,
+                    data=compressed_json,
+                    headers=headers
+                ) as response:
+                    
+                    elapsed = time.time() - start_time
+                    logger.info(f"📨 Получен ответ за {elapsed:.2f}с")
+                    logger.info(f"   Статус: {response.status} {response.reason}")
+                    
+                    try:
+                        response_text = await response.text()
+                        response_size = len(response_text)
+                        logger.info(f"   Размер ответа: {response_size} bytes")
+                        
+                        if response_size > 0:
+                            preview = response_text[:200].replace('\n', '\\n')
+                            logger.info(f"   Начало ответа: {preview}...")
+                        
+                    except Exception as read_error:
+                        logger.error(f"❌ Ошибка чтения тела ответа: {read_error}")
+                        response_text = f"ERROR_READING_RESPONSE: {read_error}"
+                    
                     if response.status == 200:
+                        logger.info(f"✅ Callback успешно отправлен за {elapsed:.2f}с (экономия {compression_ratio:.1f}%)")
                         return
-                    logger.error(f"Callback failed with status {response.status}, attempt {attempt + 1}")
+                    else:
+                        logger.error(f"❌ HTTP ошибка {response.status}: {response.reason}")
+                        
+                        if response.status == 413:
+                            logger.error("💡 Ошибка 413: Payload слишком большой для сервера")
+                        elif response.status == 500:
+                            logger.error("💡 Ошибка 500: Внутренняя ошибка сервера при обработке")
+                        elif response.status == 502:
+                            logger.error("💡 Ошибка 502: Плохой шлюз (проблема с прокси)")
+                        elif response.status == 503:
+                            logger.error("💡 Ошибка 503: Сервис недоступен")
+                        elif response.status == 504:
+                            logger.error("💡 Ошибка 504: Таймаут шлюза")
+                        else:
+                            logger.error(f"💡 Неожиданный HTTP код: {response.status}")
+                        
+                        logger.error(f"   Полный ответ сервера: {response_text}")
+        
+        except asyncio.TimeoutError as e:
+            elapsed = time.time() - start_time
+            logger.error(f"⏰ Таймаут после {elapsed:.2f}с на попытке {attempt + 1}")
+            logger.error(f"   💡 Возможно сервер не успевает обработать запрос")
+            
+        except aiohttp.ClientConnectorError as e:
+            elapsed = time.time() - start_time
+            logger.error(f"🔌 Ошибка подключения после {elapsed:.2f}с: {e}")
+            logger.error(f"   💡 Проверьте доступность {callback_url}")
+            
+        except aiohttp.ClientOSError as e:
+            elapsed = time.time() - start_time
+            logger.error(f"💻 Системная ошибка после {elapsed:.2f}с: {e}")
+            
+        except aiohttp.ClientPayloadError as e:
+            elapsed = time.time() - start_time
+            logger.error(f"📦 Ошибка передачи данных после {elapsed:.2f}с: {e}")
+            
+        except aiohttp.ServerDisconnectedError as e:
+            elapsed = time.time() - start_time
+            logger.error(f"🔌 Сервер разорвал соединение после {elapsed:.2f}с: {e}")
+            
+        except json.JSONEncodeError as e:
+            elapsed = time.time() - start_time
+            logger.error(f"📝 Ошибка кодирования JSON: {e}")
+            break
+            
         except Exception as e:
-            logger.error(f"Callback error attempt {attempt + 1}: {e}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(2 ** attempt)  # Exponential backoff
+            elapsed = time.time() - start_time
+            logger.error(f"❓ Неожиданная ошибка после {elapsed:.2f}с: {type(e).__name__}: {e}")
+            error_traceback = traceback.format_exc()
+            for line in error_traceback.split('\n'):
+                if line.strip():
+                    logger.error(f"      {line}")
+        
+        if attempt < max_retries - 1:
+            wait_time = 2 ** attempt
+            logger.info(f"⏳ Ждем {wait_time}с перед следующей попыткой...")
+            await asyncio.sleep(wait_time)
+    
+    logger.error(f"💥 КРИТИЧНО: Не удалось отправить callback после {max_retries} попыток")
+    logger.error(f"   Проект: {project_name}")
+    logger.error(f"   URL: {callback_url}")
+    logger.error(f"   Размер (сжатый): {final_size / 1024:.2f} KB")
 
 async def send_error_callback(callback_url: str, error_message: str):
     """Send error callback"""
