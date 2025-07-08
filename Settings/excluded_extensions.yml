@@ -1,5 +1,4 @@
 excluded_extensions:
-# Архивы
 - "*tar.gz"
 - "*tar.bz2"
 - "*tar"
@@ -11,8 +10,6 @@ excluded_extensions:
 - "*xz"
 - "*lz"
 - "*lzma"
-
-# Изображения
 - "*png"
 - "*jpg"
 - "*jpeg"
@@ -24,8 +21,6 @@ excluded_extensions:
 - "*tif"
 - "*webp"
 - "*avif"
-
-# Аудио/Видео
 - "*mp3"
 - "*wav"
 - "*mp4"
@@ -40,8 +35,6 @@ excluded_extensions:
 - "*wmv"
 - "*flv"
 - "*m4v"
-
-# Документы
 - "*pdf"
 - "*pptx"
 - "*epub"
@@ -54,8 +47,6 @@ excluded_extensions:
 - "*rtf"
 - "*pages"
 - "*numbers"
-
-# Системные и бэкап файлы
 - "*bak"
 - "*tmp"
 - "*temp"
@@ -65,8 +56,6 @@ excluded_extensions:
 - "*~"
 - "*orig"
 - "*backup"
-
-# Бинарники и тд
 - "*iso"
 - "*img"
 - "*bin"
@@ -79,8 +68,6 @@ excluded_extensions:
 - "*deb"
 - "*rpm"
 - "*appimage"
-
-# Скомпилированный код и тд
 - "*pyc"
 - "*pyo"
 - "*class"
@@ -94,14 +81,10 @@ excluded_extensions:
 - "*pdb"
 - "*ilk"
 - "*exp"
-
-# Шрифты
 - "*ttf"
 - "*otf"
 - "*woff"
 - "*woff2"
 - "*eot"
-
-# Лок-файлы
 - "*lock"
 - "*lockb"
