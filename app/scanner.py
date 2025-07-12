@@ -64,10 +64,15 @@ def get_full_extension(filename):
     return match.group(0).lower() if match else ''
 
 def is_extension_excluded(file_ext, EXCLUDED_EXTENSIONS):
-    for pattern in EXCLUDED_EXTENSIONS:
-        if fnmatch.fnmatch(file_ext, pattern):
-            return True
+    if file_ext in EXCLUDED_EXTENSIONS:
+        #logger.info(f"file_ext: {file_ext} in EXCLUDED_EXTENSIONS - True")
+        return True
     return False
+    # for pattern in EXCLUDED_EXTENSIONS:
+    #     if fnmatch.fnmatch(file_ext, pattern):
+    #         logger.info(f"file_ext: {file_ext}, pattern: {pattern} - True")
+    #         return True
+    # return False
 
 async def _analyze_file(file_path, rules, target_dir, max_secrets=50, max_line_length=15_000, FALSE_POSITIVE_RULES=[]):
     """Асинхронная функция для анализа файла с ограничениями"""
@@ -138,20 +143,30 @@ async def scan_directory(request, target_dir, rules, EXCLUDED_FILES, EXCLUDED_EX
     scan_start = time.time()
     all_results = []
     file_list = []
+    all_files_count = 0
+    skipped_extensions = []
+    skipped_files = []
 
     # Собираем список файлов для обработки
     file_collection_start = time.time()
     for root, _, files in os.walk(target_dir):
-        for file in files:           
+        for file in files:
+            all_files_count += 1         
             file_ext = get_full_extension(file)
-            if is_extension_excluded(file_ext, EXCLUDED_EXTENSIONS) or file in EXCLUDED_FILES:
+            if is_extension_excluded(file_ext, EXCLUDED_EXTENSIONS):
+                skipped_extensions.append(file_ext)
+                if file_ext not in skipped_files:
+                    skipped_files.append(f"*.{file_ext}")
                 continue
-            if file_ext in EXCLUDED_EXTENSIONS or file in EXCLUDED_FILES:
+            elif file in EXCLUDED_FILES:
+                skipped_files.append(file)
                 continue
             file_list.append(os.path.join(root, file))
 
     file_collection_time = time.time() - file_collection_start
     logger.info(f"Найдено файлов для сканирования: {len(file_list)} (время сбора: {file_collection_time:.2f}с)")
+    logger.info(f"Пропущены расширения (by rules): {skipped_extensions}")
+    logger.info(f"Пропущены файлы (by rules): {skipped_files}")
     
     SEND_PARTIAL_EVERY = max(1, len(file_list) // 10)
     
@@ -194,25 +209,40 @@ async def scan_directory(request, target_dir, rules, EXCLUDED_FILES, EXCLUDED_EX
 
     total_scan_time = time.time() - scan_start
     logger.info(f"Сканирование завершено. Обработано файлов: {len(file_list)}, найдено секретов: {len(all_results)} (общее время: {total_scan_time:.2f}с)")
-    return all_results, len(file_list)
+    files_excluded = all_files_count - len(file_list)
+    skipped_files = ", ".join(skipped_files)
+    return all_results, files_excluded, all_files_count, skipped_files
 
 async def scan_directory_without_callback(target_dir, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES):
     """Сканирование директории без callback (для использования в процессах)"""
     scan_start = time.time()
     all_results = []
     file_list = []
+    all_files_count = 0
+    skipped_extensions = []
+    skipped_files = []
+    #logger.info(f"EXCLUDED_EXTENSIONS: {EXCLUDED_EXTENSIONS}")
 
     # Сбор файлов
     file_collection_start = time.time()
     for root, _, files in os.walk(target_dir):
-        for file in files:           
+        for file in files:
+            all_files_count += 1
             file_ext = get_full_extension(file)
-            if is_extension_excluded(file_ext, EXCLUDED_EXTENSIONS) or file in EXCLUDED_FILES:
+            if is_extension_excluded(file_ext, EXCLUDED_EXTENSIONS):
+                skipped_extensions.append(file_ext)
+                if file_ext not in skipped_files:
+                    skipped_files.append(f"*.{file_ext}")
+                continue
+            elif file in EXCLUDED_FILES:
+                skipped_files.append(file)
                 continue
             file_list.append(os.path.join(root, file))
 
     file_collection_time = time.time() - file_collection_start
     logger.info(f"Найдено файлов для сканирования: {len(file_list)} (время сбора: {file_collection_time:.2f}с)")
+    logger.info(f"Пропущены расширения (by rules): {skipped_extensions}")
+    logger.info(f"Пропущены файлы (by rules): {skipped_files}")
     
     # Process files concurrently in batches
     batch_size = 5
@@ -231,7 +261,9 @@ async def scan_directory_without_callback(target_dir, rules, EXCLUDED_FILES, EXC
 
     total_scan_time = time.time() - scan_start
     logger.info(f"Сканирование завершено. Обработано файлов: {len(file_list)}, найдено секретов: {len(all_results)} (общее время: {total_scan_time:.2f}с)")
-    return all_results, len(file_list)
+    files_excluded = all_files_count - len(file_list)
+    skipped_files = ", ".join(skipped_files)
+    return all_results, files_excluded, all_files_count, skipped_files
 
 async def scan_repo(request, repo_path, projectName):
     """Основная функция сканирования с callback"""
@@ -246,7 +278,7 @@ async def scan_repo(request, repo_path, projectName):
     
     logger.info(f"Начинаю сканирование {projectName} (загрузка модели: {model_load_time:.2f}с)")
     
-    results, all_files_count = await scan_directory(request, repo_path, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES)
+    results, files_excluded, all_files_count, skipped_files = await scan_directory(request, repo_path, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES)
     
     validation_start = time.time()
     logger.info("ДИРЕКТОРИЯ ПРОСКАНИРОВАНА, НАЧИНАЮ ВАЛИДАЦИЮ")
@@ -256,7 +288,7 @@ async def scan_repo(request, repo_path, projectName):
     total_time = time.time() - total_start
     logger.info(f"Сканирование {projectName} завершено (валидация: {validation_time:.2f}с, общее время: {total_time:.2f}с)")
     
-    return sevveritied_secrets, all_files_count
+    return sevveritied_secrets, files_excluded, all_files_count, skipped_files
 
 async def scan_repo_without_callback(request, repo_path, projectName):
     """Сканирование без callback для использования в отдельных процессах"""
@@ -267,9 +299,9 @@ async def scan_repo_without_callback(request, repo_path, projectName):
     
     logger.info(f"Начинаю сканирование {projectName}")
     
-    results, all_files_count = await scan_directory_without_callback(repo_path, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES)
+    results, files_excluded, all_files_count, skipped_files = await scan_directory_without_callback(repo_path, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES)
     
     total_time = time.time() - scan_start
     logger.info(f"Сканирование {projectName} без callback завершено (общее время: {total_time:.2f}с)")
     
-    return results, all_files_count
+    return results, files_excluded, all_files_count, skipped_files

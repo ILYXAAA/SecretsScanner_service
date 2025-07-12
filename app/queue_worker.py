@@ -121,7 +121,7 @@ async def process_local_scan_async(request_dict: dict, zip_content: bytes):
         scan_start = time.time()
         logger.info(f"Сканирую {project_name}")
         
-        results, all_files_count = await loop.run_in_executor(
+        results, files_excluded, all_files_count, skipped_files  = await loop.run_in_executor(
             model_executor,
             scan_repo_with_model,
             extracted_path,
@@ -130,7 +130,7 @@ async def process_local_scan_async(request_dict: dict, zip_content: bytes):
         )
         
         scan_time = time.time() - scan_start
-        logger.info(f"Просканировано {project_name} (время: {scan_time:.2f}с, файлов: {all_files_count})")
+        logger.info(f"Просканировано {project_name} (время: {scan_time:.2f}с, файлов: {files_excluded}/{all_files_count})")
         
         # Send results
         payload = {
@@ -140,7 +140,9 @@ async def process_local_scan_async(request_dict: dict, zip_content: bytes):
             "ProjectRepoUrl": request_dict["RepoUrl"],
             "RepoCommit": commit,
             "Results": results,
-            "FilesScanned": all_files_count
+            "FilesExcluded": files_excluded,
+            "AllFiles": all_files_count,
+            "SkippedFiles": skipped_files
         }
         
         await send_callback(callback_url, payload)
@@ -235,7 +237,7 @@ async def process_request_sequential(request: ScanRequest, commit: str):
             "CallbackUrl": request.CallbackUrl
         }
         
-        results, all_files_count = await loop.run_in_executor(
+        results, files_excluded, all_files_count, skipped_files = await loop.run_in_executor(
             model_executor,
             scan_repo_with_model,
             extracted_repo_path,
@@ -244,7 +246,7 @@ async def process_request_sequential(request: ScanRequest, commit: str):
         )
         
         scan_time = time.time() - scan_start
-        logger.info(f"Просканировано {request.ProjectName} (время: {scan_time:.2f}с, файлов: {all_files_count})")
+        logger.info(f"Просканировано {request.ProjectName} (время: {scan_time:.2f}с, файлов: {files_excluded}/{all_files_count})")
         
         # Step 3: Send results
         payload = {
@@ -254,7 +256,9 @@ async def process_request_sequential(request: ScanRequest, commit: str):
             "ProjectRepoUrl": request.RepoUrl,
             "RepoCommit": commit,
             "Results": results,
-            "FilesScanned": all_files_count
+            "FilesExcluded": files_excluded,
+            "AllFiles": all_files_count,
+            "SkippedFiles": skipped_files
         }
         
         await send_callback(request.CallbackUrl, payload)
@@ -299,12 +303,12 @@ def scan_repo_with_model(repo_path: str, project_name: str, request_dict: dict) 
         request = ScanRequest(**request_dict)
         
         # Perform scanning without model (in process)
-        results, file_count = asyncio.run(scan_repo_without_callback(request, repo_path, project_name))
+        results, files_excluded, file_count, skipped_files = asyncio.run(scan_repo_without_callback(request, repo_path, project_name))
         
         # Apply model filtering
         filtered_results = filter_secrets_in_process(results)
         
-        return filtered_results, file_count
+        return filtered_results, files_excluded, file_count, skipped_files
         
     except Exception as e:
         logger.error(f"Ошибка в процессе сканирования: {e}")
@@ -350,7 +354,7 @@ async def process_request_async(request: ScanRequest, commit: str):
             "CallbackUrl": request.CallbackUrl
         }
         
-        results, all_files_count = await loop.run_in_executor(
+        results, files_excluded, all_files_count, skipped_files = await loop.run_in_executor(
             model_executor,
             scan_repo_with_model,
             extracted_repo_path,
@@ -359,7 +363,7 @@ async def process_request_async(request: ScanRequest, commit: str):
         )
         
         scan_time = time.time() - scan_start
-        logger.info(f"Сканирование завершено {request.ProjectName} (время: {scan_time:.2f}с, файлов: {all_files_count})")
+        logger.info(f"Сканирование завершено {request.ProjectName} (время: {scan_time:.2f}с, файлов: {files_excluded}/{all_files_count})")
         
         # Step 3: Send results
         payload = {
@@ -369,7 +373,9 @@ async def process_request_async(request: ScanRequest, commit: str):
             "ProjectRepoUrl": request.RepoUrl,
             "RepoCommit": commit,
             "Results": results,
-            "FilesScanned": all_files_count
+            "FilesExcluded": files_excluded,
+            "AllFiles": all_files_count,
+            "SkippedFiles": skipped_files
         }
         
         await send_callback(request.CallbackUrl, payload)
