@@ -156,7 +156,7 @@ async def scan_directory(request, target_dir, rules, EXCLUDED_FILES, EXCLUDED_EX
             if is_extension_excluded(file_ext, EXCLUDED_EXTENSIONS):
                 skipped_extensions.append(file_ext)
                 if file_ext not in skipped_files:
-                    skipped_files.append(f"*.{file_ext}")
+                    skipped_files.append(f"*{file_ext}")
                 continue
             elif file in EXCLUDED_FILES:
                 skipped_files.append(file)
@@ -232,7 +232,7 @@ async def scan_directory_without_callback(target_dir, rules, EXCLUDED_FILES, EXC
             if is_extension_excluded(file_ext, EXCLUDED_EXTENSIONS):
                 skipped_extensions.append(file_ext)
                 if file_ext not in skipped_files:
-                    skipped_files.append(f"*.{file_ext}")
+                    skipped_files.append(f"*{file_ext}")
                 continue
             elif file in EXCLUDED_FILES:
                 skipped_files.append(file)
