@@ -113,7 +113,7 @@ class SecretClassifier:
             return secrets
             
         # Извлекаем строки для предсказания
-        texts = [item.get("secret", "") for item in secrets]
+        texts = [item.get("context", "") for item in secrets]
         
         if not texts:
             return secrets

@@ -13,6 +13,8 @@ test.py
 test_2.py
 run_copy.py
 test.txt
+tools/Dataset_NonSecrets.txt
+tools/Dataset_Secrets.txt
 
 # C extensions
 *.so

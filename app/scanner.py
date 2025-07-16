@@ -60,8 +60,7 @@ def check_false_positive(secret, context, FALSE_POSITIVE_RULES):
     return any(pattern.lower() in context_lower for pattern in FALSE_POSITIVE_RULES)
 
 def get_full_extension(filename):
-    match = re.search(r'(\.[^.]+){1,2}$', filename)
-    return match.group(0).lower() if match else ''
+    return os.path.splitext(filename)[1].lower()
 
 def is_extension_excluded(file_ext, EXCLUDED_EXTENSIONS):
     if file_ext in EXCLUDED_EXTENSIONS:
@@ -165,7 +164,7 @@ async def scan_directory(request, target_dir, rules, EXCLUDED_FILES, EXCLUDED_EX
 
     file_collection_time = time.time() - file_collection_start
     logger.info(f"Найдено файлов для сканирования: {len(file_list)} (время сбора: {file_collection_time:.2f}с)")
-    logger.info(f"Пропущены расширения (by rules): {skipped_extensions}")
+    #logger.info(f"Пропущены расширения (by rules): {skipped_extensions}")
     logger.info(f"Пропущены файлы (by rules): {skipped_files}")
     
     SEND_PARTIAL_EVERY = max(1, len(file_list) // 10)
@@ -241,7 +240,7 @@ async def scan_directory_without_callback(target_dir, rules, EXCLUDED_FILES, EXC
 
     file_collection_time = time.time() - file_collection_start
     logger.info(f"Найдено файлов для сканирования: {len(file_list)} (время сбора: {file_collection_time:.2f}с)")
-    logger.info(f"Пропущены расширения (by rules): {skipped_extensions}")
+    #logger.info(f"Пропущены расширения (by rules): {skipped_extensions}")
     logger.info(f"Пропущены файлы (by rules): {skipped_files}")
     
     # Process files concurrently in batches
