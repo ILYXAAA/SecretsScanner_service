@@ -11,7 +11,7 @@ from tqdm import tqdm
 fake = Faker()
 
 # Константы
-N = 53_111
+N = 100_000
 OUTPUT_FILE = "Dataset_NonSecrets.txt"
 
 def load_yaml_file(filename):

@@ -158,7 +158,8 @@ async def scan_directory(request, target_dir, rules, EXCLUDED_FILES, EXCLUDED_EX
                     skipped_files.append(f"*{file_ext}")
                 continue
             elif file in EXCLUDED_FILES:
-                skipped_files.append(file)
+                if file not in skipped_files:
+                    skipped_files.append(file)
                 continue
             file_list.append(os.path.join(root, file))
 
@@ -209,7 +210,8 @@ async def scan_directory(request, target_dir, rules, EXCLUDED_FILES, EXCLUDED_EX
     total_scan_time = time.time() - scan_start
     logger.info(f"Сканирование завершено. Обработано файлов: {len(file_list)}, найдено секретов: {len(all_results)} (общее время: {total_scan_time:.2f}с)")
     files_excluded = all_files_count - len(file_list)
-    skipped_files = ", ".join(skipped_files)
+    # if len(skipped_files) > 100:
+    #     skipped_files = f"{skipped_files[0:100]}..."
     return all_results, files_excluded, all_files_count, skipped_files
 
 async def scan_directory_without_callback(target_dir, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES):
@@ -234,7 +236,8 @@ async def scan_directory_without_callback(target_dir, rules, EXCLUDED_FILES, EXC
                     skipped_files.append(f"*{file_ext}")
                 continue
             elif file in EXCLUDED_FILES:
-                skipped_files.append(file)
+                if file not in skipped_files:
+                    skipped_files.append(file)
                 continue
             file_list.append(os.path.join(root, file))
 
@@ -262,6 +265,8 @@ async def scan_directory_without_callback(target_dir, rules, EXCLUDED_FILES, EXC
     logger.info(f"Сканирование завершено. Обработано файлов: {len(file_list)}, найдено секретов: {len(all_results)} (общее время: {total_scan_time:.2f}с)")
     files_excluded = all_files_count - len(file_list)
     skipped_files = ", ".join(skipped_files)
+    # if len(skipped_files) > 100:
+    #     skipped_files = f"{skipped_files[0:100]}..."
     return all_results, files_excluded, all_files_count, skipped_files
 
 async def scan_repo(request, repo_path, projectName):

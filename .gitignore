@@ -15,6 +15,15 @@ run_copy.py
 test.txt
 tools/Dataset_NonSecrets.txt
 tools/Dataset_Secrets.txt
+dataset_hashes.json
+dataset_hashes.txt
+BigTests/
+Tests/
+zip_repos/
+Settings/excluded_extensions.yml
+Settings/excluded_files.yml
+Settings/false-positive.yml
+Settings/rules.yml
 
 # C extensions
 *.so

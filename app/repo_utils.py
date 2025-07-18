@@ -4,7 +4,7 @@ import tempfile
 import requests
 from requests.auth import HTTPBasicAuth
 from requests_ntlm import HttpNtlmAuth
-from requests_negotiate_sspi import HttpNegotiateAuth
+# from requests_negotiate_sspi import HttpNegotiateAuth
 from urllib.parse import urlparse
 import io
 import shutil
@@ -64,7 +64,7 @@ except Exception as error:
     logger.error(f"Error: {str(error)}")
     logger.error("Если это первый запуск - необходимо запустить мастер настройки Auth данных `python app/secure_save.py`")
 
-auth_methods = ["basic", "pat", "Negotiate"]  # 'pat', 'basic', 'Negotiate' или None
+auth_methods = ["basic", "pat"]  # 'pat', 'basic', 'Negotiate' или None
 
 
 def get_auth(auth_method):
@@ -72,8 +72,8 @@ def get_auth(auth_method):
         return HTTPBasicAuth("", pat)
     elif auth_method == 'basic' and username and password:
         return HttpNtlmAuth(username, password)
-    elif auth_method == 'Negotiate':
-        return HttpNegotiateAuth()
+    # elif auth_method == 'Negotiate':
+    #     return HttpNegotiateAuth()
     else:
         return None
 

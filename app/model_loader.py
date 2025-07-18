@@ -113,7 +113,7 @@ class SecretClassifier:
             return secrets
             
         # Извлекаем строки для предсказания
-        texts = [item.get("context", "") for item in secrets]
+        texts = [item.get("secret", "") for item in secrets]
         
         if not texts:
             return secrets
@@ -129,7 +129,7 @@ class SecretClassifier:
                 #logger.info(f"Secret: {item['secret'][:20]}... | Confidence: {confidence:.3f} | Pred: {pred}")
                 
                 if "СТРОКА НЕ СКАНИРОВАЛАСЬ т.к. её длина" in item["secret"] or "ФАЙЛ НЕ ВЫВЕДЕН ПОЛНОСТЬЮ т.к." in item["secret"]:
-                    item["confidence"] = 0.00
+                    item["confidence"] = 0.50
                     item["severity"] = "Potential"
                 else:
                     item["confidence"] = round(confidence, 2)
