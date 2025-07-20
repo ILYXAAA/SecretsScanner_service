@@ -1,0 +1,119 @@
+{
+  "python": {
+    "extensions": [".py", ".pyc", ".pyo", ".pyw", ".pyz", ".ipynb", ".pyi", ".pth", ".pyx", ".pxd", ".pxi", ".wsgi", ".py3"]
+  },
+  "javascript": {
+    "extensions": [".js", ".jsx", ".mjs", ".cjs", ".es6", ".es", ".jse", ".jsm"]
+  },
+  "typescript": {
+    "extensions": [".ts", ".tsx", ".d.ts", ".cts", ".mts", ".d.cts", ".d.mts"]
+  },
+  "java": {
+    "extensions": [".java", ".class", ".jar", ".war", ".ear", ".jad", ".java~", ".jav", ".gradle"]
+  },
+  "С#": {
+    "extensions": [".cs", ".csx", ".cshtml", ".razor"]
+  },
+  "C/С++": {
+    "extensions": [".cpp", ".cxx", ".cc", ".c++", ".c", ".h", ".hpp", ".hxx", ".ipp", ".inl", ".tpp"]
+  },
+  "go": {
+    "extensions": [".go", ".mod", ".sum", ".work"]
+  },
+  "rust": {
+    "extensions": [".rs", ".rlib"]
+  },
+  "php": {
+    "extensions": [".php", ".phtml", ".php3", ".php4", ".php5", ".phps", ".php7", ".php8", ".phar", ".inc"]
+  },
+  "ruby": {
+    "extensions": [".rb", ".rbw", ".rake", ".gemspec", ".ru"]
+  },
+  "swift": {
+    "extensions": [".swift"]
+  },
+  "kotlin": {
+    "extensions": [".kt", ".kts", ".ktm"]
+  },
+  "scala": {
+    "extensions": [".scala", ".sc"]
+  },
+  "html": {
+    "extensions": [".html", ".htm", ".xhtml", ".shtml", ".shtm", ".stm"]
+  },
+  "css": {
+    "extensions": [".css", ".scss", ".sass", ".less", ".styl", ".stylus"]
+  },
+  "db": {
+    "extensions": [".sql", ".sqlite", ".sqlite3", ".db", ".db3", ".s3db", ".sl3", ".mdb", ".accdb", ".dbf", ".frm", ".myd", ".myi", ".ibd"]
+  },
+  "shell": {
+    "extensions": [".sh", ".bash", ".zsh", ".fish", ".ksh", ".csh", ".tcsh", ".dash"]
+  },
+  "powershell": {
+    "extensions": [".ps1", ".psm1", ".psd1", ".ps1xml", ".psc1", ".pssc", ".psrc", ".cdxml"]
+  },
+  "markdown": {
+    "extensions": [".md", ".markdown", ".mdown", ".mkd", ".mkdn", ".mdx"]
+  },
+  "dockerfile": {
+    "extensions": ["dockerfile", ".dockerfile", "Dockerfile", "Containerfile", ".containerfile"]
+  },
+  "certs": {
+    "extensions": [".certs", ".pem", ".crt", ".cer", ".der", ".p12", ".pfx", ".p7b", ".p7c", ".key", ".pub", ".csr", ".ca-bundle"]
+  },
+  "perl": {
+   "extensions": [".pl", ".pm", ".pod", ".t"]
+  },
+  "lua": {
+    "extensions": [".lua"]
+  },
+  "dart": {
+    "extensions": [".dart"]
+  },
+  "r": {
+    "extensions": [".r", ".R", ".rmd", ".rnw"]
+  },
+  "matlab": {
+    "extensions": [".m", ".mat", ".fig", ".mlx"]
+  },
+  "haskell": {
+    "extensions": [".hs", ".lhs"]
+  },
+  "clojure": {
+    "extensions": [".clj", ".cljs", ".cljc", ".edn"]
+  },
+  "erlang": {
+    "extensions": [".erl", ".hrl"]
+  },
+  "elixir": {
+    "extensions": [".ex", ".exs"]
+  },
+  "archive": {
+    "extensions": [".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tar.gz", ".tar.bz2", ".tar.xz"]
+  },
+  "image": {
+    "extensions": [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg", ".webp", ".ico", ".tiff", ".tif"]
+  },
+  "video": {
+    "extensions": [".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv", ".webm", ".m4v"]
+  },
+  "audio": {
+    "extensions": [".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", ".m4a"]
+  },
+  "document": {
+    "extensions": [".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp", ".rtf", ".txt"]
+  },
+  "fonts": {
+    "extensions": [".ttf", ".otf", ".woff", ".woff2", ".eot"]
+  },
+  "backup": {
+    "extensions": [".bak", ".backup", ".old", ".orig", ".tmp", ".temp", ".swp", ".swo", ".~"]
+  },
+  "logs": {
+    "extensions": [".log", ".out", ".err", ".trace"]
+  },
+  "conf": {
+    "extensions": [".ini", ".cfg", ".conf", ".config", ".toml", ".properties", ".yaml", ".yml", ".json", ".json5", ".xml", ".xsd", ".xsl", ".xslt", ".env", ".dotenv", ".editorconfig", ".gitconfig", ".vimrc", ".bashrc", ".zshrc", ".profile", ".settings", ".prefs", ".plist", ".reg"]
+  }
+}

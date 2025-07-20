@@ -24,6 +24,10 @@ Settings/excluded_extensions.yml
 Settings/excluded_files.yml
 Settings/false-positive.yml
 Settings/rules.yml
+dataset_analysis_results.json
+dataset_quality_report.txt
+secrets_patterns.yaml.backup
+wrong_secrets.csv
 
 # C extensions
 *.so

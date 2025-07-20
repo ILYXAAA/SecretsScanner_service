@@ -15,7 +15,7 @@ from collections import defaultdict
 fake = Faker()
 
 # Константы
-N = 100_000
+N = 264_385
 OUTPUT_FILE = "Dataset_Secrets.txt"
 RULES_FILE = "../Settings/rules.yml"
 PATTERNS_FILE = "secrets_patterns.yaml"

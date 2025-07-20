@@ -1,0 +1,58 @@
+frameworks:
+  Angular:
+    dependencies:
+      - "@angular/core"
+      - "@angular/common"
+      - "@angular/platform-browser"
+    files:
+      - "angular.json"
+      - ".angular-cli.json"
+    code_patterns:
+      - "@angular/"
+      - "import.*from.*@angular"
+    code_extensions:
+      - ".ts"
+      - ".js"
+      - ".html"
+      - ".scss"
+      - ".css"
+  
+  NestJS:
+    dependencies:
+      - "@nestjs/core"
+      - "@nestjs/common"
+      - "@nestjs/platform-express"
+    files:
+      - "nest-cli.json"
+    code_patterns:
+      - "@nestjs/"
+      - "import.*from.*@nestjs"
+    code_extensions:
+      - ".ts"
+      - ".js"
+  
+  Vue:
+    dependencies:
+      - "vue"
+      - "@vue/core"
+      - "vue-router"
+    files:
+      - "vue.config.js"
+      - "vite.config.js"
+    code_patterns:
+      - "import.*vue"
+      - "from.*vue"
+      - "<template>"
+    code_extensions:
+      - ".js"
+      - ".ts"
+      - ".vue"
+      - ".html"
+
+manifest_files:
+  - "package.json"
+  - "requirements.txt"
+  - "pom.xml"
+  - "build.gradle"
+  - "Cargo.toml"
+  - "composer.json"

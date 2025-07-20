@@ -884,8 +884,8 @@ def main():
     """Основная функция для запуска анализа"""
     # Пути к файлам (настройте под ваши пути)
     rules_path = "../Settings/rules.yml"
-    secrets_path = "../Datasets/Dataset_Secrets.txt"
-    non_secrets_path = "../Datasets/Dataset_NonSecrets.txt"
+    secrets_path = "Dataset_Secrets.txt"
+    non_secrets_path = "Dataset_NonSecrets.txt"
     
     print("Запуск анализа качества датасетов для детекции секретов...")
     print("=" * 60)
