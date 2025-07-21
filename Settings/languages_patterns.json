@@ -120,7 +120,7 @@
     "extensions": [
       ".exe", ".dll", ".so", ".dylib", ".lib", ".bin", ".deb", ".rpm", ".msi", ".pkg", ".pyc", ".whl", ".zip", 
       ".rar", ".7z", ".tar", ".gz", ".txz", ".tgz", ".zpaq", ".bz", ".bz2", ".xz", ".tar.gz", ".tar.bz2", ".tar.xz",
-      ".ear", ".iso", ".jar", ".res", ".war", ".db", ".dbf", ".gitignore", ".h4", ".h5", ".hdf", ".hdf4", ".hdf5", 
+      ".ear", ".iso", ".jar", ".res", ".war", ".db", ".dbf", ".h4", ".h5", ".hdf", ".hdf4", ".hdf5", 
       ".he2", ".he5", ".onnx", ".ort", ".pb", ".pck", ".pcl", ".pickle", ".pkl", ".pmml", ".protobuf", ".tflite"
     ]
   },
