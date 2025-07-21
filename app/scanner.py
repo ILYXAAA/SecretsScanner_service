@@ -144,16 +144,10 @@ def format_framework_results(detections_dict):
     return result
 
 def detect_languages(target_dir):
-    """Определяет языки программирования в директории"""
+    """Определяет языки программирования в директории с поддержкой дубликатов"""
     languages_patterns = load_languages_patterns()
     if not languages_patterns:
         return {}
-    
-    # Создаем словарь расширение -> язык для быстрого поиска
-    extension_to_language = {}
-    for language, data in languages_patterns.items():
-        for ext in data.get('extensions', []):
-            extension_to_language[ext.lower()] = language
     
     detected_languages = {}
     
@@ -161,19 +155,27 @@ def detect_languages(target_dir):
         for file in files:
             file_ext = get_full_extension(file)
             
-            if file_ext in extension_to_language:
-                language = extension_to_language[file_ext]
-            else:
-                language = "Other"
+            # Ищем все языки/типы для данного расширения
+            matched_languages = []
+            for language, data in languages_patterns.items():
+                extensions = [ext.lower() for ext in data.get('extensions', [])]
+                if file_ext in extensions:
+                    matched_languages.append(language)
             
-            if language not in detected_languages:
-                detected_languages[language] = {
-                    "Files": 0,
-                    "ExtensionsList": set()
-                }
+            # Если расширение не найдено ни в одной категории
+            if not matched_languages:
+                matched_languages = ["Other"]
             
-            detected_languages[language]["Files"] += 1
-            detected_languages[language]["ExtensionsList"].add(file_ext)
+            # Добавляем файл ко всем подходящим категориям
+            for language in matched_languages:
+                if language not in detected_languages:
+                    detected_languages[language] = {
+                        "Files": 0,
+                        "ExtensionsList": set()
+                    }
+                
+                detected_languages[language]["Files"] += 1
+                detected_languages[language]["ExtensionsList"].add(file_ext)
     
     # Конвертируем set в list для JSON сериализации
     for language_data in detected_languages.values():

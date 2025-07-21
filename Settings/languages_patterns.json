@@ -1,6 +1,6 @@
 {
   "python": {
-    "extensions": [".py", ".pyc", ".pyo", ".pyw", ".pyz", ".ipynb", ".pyi", ".pth", ".pyx", ".pxd", ".pxi", ".wsgi", ".py3"]
+    "extensions": [".py", ".pyo", ".pyw", ".pyz", ".ipynb", ".pyi", ".pth", ".pyx", ".pxd", ".pxi", ".wsgi", ".py3"]
   },
   "javascript": {
     "extensions": [".js", ".jsx", ".mjs", ".cjs", ".es6", ".es", ".jse", ".jsm"]
@@ -90,7 +90,7 @@
     "extensions": [".ex", ".exs"]
   },
   "archive": {
-    "extensions": [".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tar.gz", ".tar.bz2", ".tar.xz"]
+    "extensions": [".zip", ".rar", ".7z", ".tar", ".gz", ".txz", ".tgz", ".zpaq", ".bz", ".bz2", ".xz", ".tar.gz", ".tar.bz2", ".tar.xz"]
   },
   "image": {
     "extensions": [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg", ".webp", ".ico", ".tiff", ".tif"]
@@ -112,6 +112,17 @@
   },
   "logs": {
     "extensions": [".log", ".out", ".err", ".trace"]
+  },
+  "binary": {
+    "extensions": [".exe", ".dll", ".so", ".dylib", ".lib", ".bin", ".deb", ".rpm", ".msi", ".pkg", ".pyc", ".whl"]
+  },
+  "forbidden": {
+    "extensions": [
+      ".exe", ".dll", ".so", ".dylib", ".lib", ".bin", ".deb", ".rpm", ".msi", ".pkg", ".pyc", ".whl", ".zip", 
+      ".rar", ".7z", ".tar", ".gz", ".txz", ".tgz", ".zpaq", ".bz", ".bz2", ".xz", ".tar.gz", ".tar.bz2", ".tar.xz",
+      ".ear", ".iso", ".jar", ".res", ".war", ".db", ".dbf", ".gitignore", ".h4", ".h5", ".hdf", ".hdf4", ".hdf5", 
+      ".he2", ".he5", ".onnx", ".ort", ".pb", ".pck", ".pcl", ".pickle", ".pkl", ".pmml", ".protobuf", ".tflite"
+    ]
   },
   "conf": {
     "extensions": [".ini", ".cfg", ".conf", ".config", ".toml", ".properties", ".yaml", ".yml", ".json", ".json5", ".xml", ".xsd", ".xsl", ".xslt", ".env", ".dotenv", ".editorconfig", ".gitconfig", ".vimrc", ".bashrc", ".zshrc", ".profile", ".settings", ".prefs", ".plist", ".reg"]
