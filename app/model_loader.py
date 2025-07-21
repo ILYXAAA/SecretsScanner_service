@@ -378,7 +378,9 @@ class SecretClassifier:
                 confidence_context = proba_context[1]
                 
                 # Усредняем confidence
-                confidence = (confidence_text + confidence_context) / 2
+                secret_weight = 1.0
+                context_weight = 0.8
+                confidence = (confidence_text * secret_weight + confidence_context * context_weight) / (secret_weight + context_weight)
                 # Финальное предсказание основываем на усредненной уверенности
                 pred = int(confidence > 0.5)
                 
@@ -508,7 +510,9 @@ class SecretClassifier:
                     item["context_prediction"] = bool(pred_context)
                     
                     # Усредняем confidence
-                    final_confidence = (confidence_secret + confidence_context) / 2
+                    secret_weight = 1.0
+                    context_weight = 0.8
+                    final_confidence = (confidence_secret * secret_weight + confidence_context * context_weight) / (secret_weight + context_weight)
                     item["confidence_averaged"] = True
                     
                     #logger.info(f"Secret conf: {confidence_secret:.3f}, Context conf: {confidence_context:.3f}, Avg: {final_confidence:.3f}")
