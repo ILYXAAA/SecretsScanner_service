@@ -164,7 +164,50 @@ def extract_zip_file(zip_path: str, extract_path: str):
     """Extract zip file synchronously"""
     try:
         with zipfile.ZipFile(zip_path, 'r') as zip_file:
-            zip_file.extractall(extract_path)
+            # Для GitHub всегда убираем корневую папку
+            if HubType.lower() == "github":
+                file_list = zip_file.namelist()
+                
+                if file_list:
+                    # Проверяем, есть ли единственная корневая папка
+                    root_folders = set()
+                    for file_path in file_list:
+                        if '/' in file_path:
+                            root_folder = file_path.split('/')[0]
+                            root_folders.add(root_folder)
+                        else:
+                            root_folders.add('')
+                    
+                    # Если есть только одна корневая папка и нет файлов в корне
+                    if len(root_folders) == 1 and '' not in root_folders:
+                        root_folder = list(root_folders)[0] + '/'
+                        logger.info(f"GitHub архив: убираем корневую папку {root_folder}")
+                        
+                        for member in zip_file.infolist():
+                            if member.filename == root_folder.rstrip('/'):
+                                continue
+                                
+                            if member.filename.startswith(root_folder):
+                                new_path = member.filename[len(root_folder):]
+                                if new_path:
+                                    target_path = os.path.join(extract_path, new_path)
+                                    
+                                    if member.is_dir():
+                                        os.makedirs(target_path, exist_ok=True)
+                                    else:
+                                        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                                        with zip_file.open(member) as source:
+                                            with open(target_path, 'wb') as target:
+                                                target.write(source.read())
+                    else:
+                        zip_file.extractall(extract_path)
+                else:
+                    zip_file.extractall(extract_path)
+            else:
+                # Для Azure извлекаем как есть (сохраняем оригинальную структуру)
+                logger.info("Azure архив: извлекаем оригинальную структуру")
+                zip_file.extractall(extract_path)
+            
         return True
     except Exception as e:
         logger.error(f"Ошибка при распаковке ZIP: {e}")

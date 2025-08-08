@@ -218,32 +218,95 @@ async def download_repo_azure(repo_url, commit_id, extract_path):
     return_string = f"Ошибка при скачивании {repo_name}: {response.status_code}"
     return "", return_string
 
+
+def extract_github_archive(zip_file, extract_path):
+    """
+    Извлекает GitHub архив, убирая корневую папку с именем репозитория
+    """
+    # Получаем список всех файлов в архиве
+    file_list = zip_file.namelist()
+    
+    # Находим корневую папку (первый элемент после разделения по '/')
+    if file_list:
+        root_folder = file_list[0].split('/')[0] + '/'
+        
+        # Извлекаем все файлы
+        for member in zip_file.infolist():
+            # Пропускаем саму корневую папку
+            if member.filename == root_folder.rstrip('/'):
+                continue
+                
+            # Убираем корневую папку из пути
+            if member.filename.startswith(root_folder):
+                # Новый путь без корневой папки
+                new_path = member.filename[len(root_folder):]
+                
+                # Если это не пустой путь
+                if new_path:
+                    # Создаем полный путь для извлечения
+                    target_path = os.path.join(extract_path, new_path)
+                    
+                    # Создаем директории если нужно
+                    if member.is_dir():
+                        os.makedirs(target_path, exist_ok=True)
+                    else:
+                        # Создаем родительские директории
+                        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                        
+                        # Извлекаем файл
+                        with zip_file.open(member) as source:
+                            with open(target_path, 'wb') as target:
+                                target.write(source.read())
+
 async def download_github_repo(repo_url, commit_id, extract_path):
     """
     Скачивает архив репозитория GitHub на указанном коммите и распаковывает его.
-
-    :param repo_url: URL на репозиторий GitHub, например https://github.com/user/repo
-    :param commit_id: Хеш коммита
-    :param extract_path: Путь для распаковки архива
+    Исправленная версия без корневой папки в путях.
     """
     os.makedirs(extract_path, exist_ok=True)
     download_start = time.time()
     try:
-        # Убедимся, что URL не заканчивается на /
         repo_url = repo_url.rstrip('/')
-
-        # Формируем ссылку на zip архив коммита
         zip_url = f"{repo_url}/archive/{commit_id}.zip"
 
         logger.info(f"Скачиваем {zip_url}...")
-
-        # Скачиваем zip архив
         response = requests.get(zip_url, verify=False)
         response.raise_for_status()
 
-        # Распаковываем архив в указанную папку
+        # ИСПРАВЛЕНИЕ: для GitHub убираем корневую папку
         with zipfile.ZipFile(io.BytesIO(response.content)) as zip_file:
-            zip_file.extractall(extract_path)
+            extract_github_archive(zip_file, extract_path)
+
+        download_time = time.time() - download_start
+        logger.info(f"Репозиторий успешно скачан и распакован в: {extract_path} (время: {download_time:.2f}с)")
+        return extract_path, "Success"
+    except requests.HTTPError as http_err:
+        logger.error(f"HTTP ошибка: {http_err}")
+        return_string = f"HTTP ошибка: {http_err}"
+        return "", return_string
+    except Exception as err:
+        logger.error(f"Общая ошибка: {err}")
+        return_string = f"Общая ошибка: {err}"
+        return "", return_string
+
+async def download_github_repo(repo_url, commit_id, extract_path):
+    """
+    Скачивает архив репозитория GitHub на указанном коммите и распаковывает его.
+    Исправленная версия без корневой папки в путях.
+    """
+    os.makedirs(extract_path, exist_ok=True)
+    download_start = time.time()
+    try:
+        repo_url = repo_url.rstrip('/')
+        zip_url = f"{repo_url}/archive/{commit_id}.zip"
+
+        logger.info(f"Скачиваем {zip_url}...")
+        response = requests.get(zip_url, verify=False)
+        response.raise_for_status()
+
+        # ИСПРАВЛЕНИЕ: используем специальную функцию для GitHub архивов
+        with zipfile.ZipFile(io.BytesIO(response.content)) as zip_file:
+            extract_github_archive(zip_file, extract_path)
 
         download_time = time.time() - download_start
         logger.info(f"Репозиторий успешно скачан и распакован в: {extract_path} (время: {download_time:.2f}с)")
