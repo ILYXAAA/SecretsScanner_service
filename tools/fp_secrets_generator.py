@@ -12,7 +12,7 @@ from collections import defaultdict
 fake = Faker()
 
 # Константы
-N = 70_000
+N = 10_000
 OUTPUT_FILE = "Dataset_NonSecrets.txt"
 RULES_FILE = "../Settings/rules.yml"
 

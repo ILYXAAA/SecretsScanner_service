@@ -12,14 +12,14 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 # Setup logging to file
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        RotatingFileHandler('secrets_scanner_service.log', maxBytes=10*1024*1024, backupCount=5, encoding='utf-8'),
-        logging.StreamHandler()  # Также выводить в консоль
-    ]
-)
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+#     handlers=[
+#         RotatingFileHandler('secrets_scanner_service.log', maxBytes=10*1024*1024, backupCount=5, encoding='utf-8'),
+#         logging.StreamHandler()  # Также выводить в консоль
+#     ]
+# )
 logger = logging.getLogger("scanner")
 
 RULES_FILE = "Settings/rules.yml"
@@ -417,7 +417,7 @@ async def search_secrets(file_path, rules, target_dir, max_secrets=50, max_line_
     return await _analyze_file(file_path, rules, target_dir, max_secrets, max_line_length, FALSE_POSITIVE_RULES)
 
 
-async def scan_directory_without_callback(projectName, target_dir, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES):
+async def scan_directory_without_callback(projectName, target_dir, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES, skipped_files_from_extraction=None):
     """Сканирование директории без callback (для использования в процессах)"""
     scan_start = time.time()
     all_results = []
@@ -425,6 +425,10 @@ async def scan_directory_without_callback(projectName, target_dir, rules, EXCLUD
     all_files_count = 0
     skipped_extensions = []
     skipped_files = []
+
+    # Добавляем файлы, исключенные на этапе распаковки
+    if skipped_files_from_extraction:
+        skipped_files.extend(skipped_files_from_extraction)
 
     # Сбор файлов
     file_collection_start = time.time()
@@ -477,11 +481,11 @@ async def scan_directory_without_callback(projectName, target_dir, rules, EXCLUD
     total_scan_time = time.time() - scan_start
     logger.info(f"[{projectName}] Сканирование завершено. Обработано файлов: {len(file_list)}, найдено секретов: {len(all_results)} (общее время: {total_scan_time:.2f}с)")
     files_excluded = all_files_count - len(file_list)
-    skipped_files = ", ".join(skipped_files)
+    skipped_files_str = ", ".join(skipped_files)
     
-    return all_results, files_excluded, all_files_count, skipped_files, detected_languages, detected_frameworks
+    return all_results, files_excluded, all_files_count, skipped_files_str, detected_languages, detected_frameworks
 
-async def scan_repo_without_callback(request, repo_path, projectName):
+async def scan_repo_without_callback(request, repo_path, projectName, skipped_at_extraction=0, skipped_files_from_extraction=None):
     """Сканирование без callback для использования в отдельных процессах"""
     scan_start = time.time()
     
@@ -490,7 +494,14 @@ async def scan_repo_without_callback(request, repo_path, projectName):
     
     logger.info(f"[{projectName}] Начинаю сканирование")
     
-    results, files_excluded, all_files_count, skipped_files, detected_languages, detected_frameworks = await scan_directory_without_callback(projectName, repo_path, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES)
+    if skipped_files_from_extraction is None:
+        skipped_files_from_extraction = []
+    
+    results, files_excluded, all_files_count, skipped_files, detected_languages, detected_frameworks = await scan_directory_without_callback(projectName, repo_path, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES, skipped_files_from_extraction)
+    
+    # Добавляем файлы, пропущенные при распаковке
+    files_excluded += skipped_at_extraction
+    all_files_count += skipped_at_extraction
     
     total_time = time.time() - scan_start
     logger.info(f"[{projectName}] Сканирование завершено (общее время: {total_time:.2f}с)")

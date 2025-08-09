@@ -25,10 +25,20 @@ class ColoredFormatter(logging.Formatter):
     }
     
     def format(self, record):
-        colored_record = logging.makeLogRecord(record.__dict__)
+        # Применяем стандартное форматирование
+        formatted = super().format(record)
+        
+        # Добавляем цвет к уровню логирования
         log_color = self.COLORS.get(record.levelname, self.COLORS['RESET'])
-        colored_record.levelname = f"{log_color}{record.levelname}{self.COLORS['RESET']}"
-        return super().format(colored_record)
+        reset_color = self.COLORS['RESET']
+        
+        # Заменяем [LEVEL] на цветной вариант
+        formatted = formatted.replace(
+            f'[{record.levelname}]', 
+            f'[{log_color}{record.levelname}{reset_color}]'
+        )
+        
+        return formatted
 
 def get_accurate_model_memory():
     """Get actual loaded model memory usage"""
@@ -47,7 +57,9 @@ def setup_logging():
         logger.removeHandler(handler)
     
     console_handler = logging.StreamHandler()
-    formatter = ColoredFormatter(fmt='[%(levelname)s] %(message)s')
+    # Добавили %(name)s для отображения имени модуля
+    formatter = ColoredFormatter(fmt='%(asctime)s - %(name)s - [%(levelname)s] %(message)s', 
+                                datefmt='%d.%m %H:%M:%S')
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
     
@@ -58,6 +70,7 @@ def setup_logging():
         backupCount=5,
         encoding='utf-8'
     )
+    # В файл пишем с полной датой
     file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)

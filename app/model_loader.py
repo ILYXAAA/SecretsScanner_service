@@ -13,16 +13,16 @@ from logging.handlers import RotatingFileHandler
 
 # Setup logging function
 def setup_logging(console_mode=False):
-    log_file = '../secrets_scanner_service.log' if console_mode else 'secrets_scanner_service.log'
+    # log_file = '../secrets_scanner_service.log' if console_mode else 'secrets_scanner_service.log'
     
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8'),
-            logging.StreamHandler()
-        ]
-    )
+    # logging.basicConfig(
+    #     level=logging.INFO,
+    #     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    #     handlers=[
+    #         RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8'),
+    #         logging.StreamHandler()
+    #     ]
+    # )
     return logging.getLogger("model_loader")
 
 # Default logger for import mode

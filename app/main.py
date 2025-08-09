@@ -18,14 +18,14 @@ import secrets
 load_dotenv()
 os.system("") # Нужно для отображение цвета в консоли Windows
 # Setup logging to file
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        RotatingFileHandler('secrets_scanner_service.log', maxBytes=10*1024*1024, backupCount=5, encoding='utf-8'),
-        logging.StreamHandler()  # Также выводить в консоль
-    ]
-)
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+#     handlers=[
+#         RotatingFileHandler('secrets_scanner_service.log', maxBytes=10*1024*1024, backupCount=5, encoding='utf-8'),
+#         logging.StreamHandler()  # Также выводить в консоль
+#     ]
+# )
 logger = logging.getLogger("main")
 HubType = os.getenv("HubType")
 API_KEY = os.getenv("API_KEY")
@@ -321,7 +321,7 @@ async def local_scan(
     """Process uploaded zip file locally"""
     
     try:
-        logger.info(f"Получен запрос на локальное сканирование: {ProjectName}")
+        logger.info(f"[{ProjectName}] Получен запрос на локальное сканирование проекта")
         # print(f"  - RepoUrl: {RepoUrl}")
         # print(f"  - CallbackUrl: {CallbackUrl}")
         # print(f"  - zip_file.filename: {zip_file.filename}")
@@ -343,9 +343,9 @@ async def local_scan(
             })
 
         # Read file content immediately before putting in queue
-        logger.info("Читаю содержимое ZIP файла...")
+        logger.info(f"[{ProjectName}] Читаю содержимое ZIP файла...")
         zip_content = await zip_file.read()
-        logger.info(f"Прочитано {len(zip_content)} байт")
+        #logger.info(f"Прочитано {len(zip_content)} байт")
         
         # Create request object
         request_dict = {
@@ -358,7 +358,7 @@ async def local_scan(
 
         # Add to queue with file content instead of file object
         await task_queue.put(("local_scan", request_dict, zip_content))
-        logger.info(f"Локальное сканирование {ProjectName} поставлено в очередь")
+        logger.info(f"[{ProjectName}] Локальное сканирование поставлено в очередь")
         
         return JSONResponse(
             content={
@@ -371,7 +371,7 @@ async def local_scan(
         )
     
     except Exception as e:
-        logger.error(f"Ошибка при добавлении локального сканирования: {e}")
+        logger.error(f"[{ProjectName}] Ошибка при добавлении локального сканирования: {e}")
         import traceback
         traceback.print_exc()
         return JSONResponse(status_code=500, content={

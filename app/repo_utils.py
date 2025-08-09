@@ -21,14 +21,14 @@ from logging.handlers import RotatingFileHandler
 # Load environment variables
 load_dotenv()
 # Setup logging to file
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        RotatingFileHandler('secrets_scanner_service.log', maxBytes=10*1024*1024, backupCount=5, encoding='utf-8'),
-        logging.StreamHandler()  # Также выводить в консоль
-    ]
-)
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+#     handlers=[
+#         RotatingFileHandler('secrets_scanner_service.log', maxBytes=10*1024*1024, backupCount=5, encoding='utf-8'),
+#         logging.StreamHandler()  # Также выводить в консоль
+#     ]
+# )
 logger = logging.getLogger("repo_utils")
 
 with open('Settings/excluded_files.yml', 'r') as f:
@@ -177,7 +177,7 @@ async def download_repo_azure(repo_url, commit_id, extract_path):
 
     for auth_method in auth_methods:
         download_start = time.time()
-        logger.info(f"Скачиваем '{repo_name}' --> {commit_id[:7]}... auth_method: {auth_method}")
+        logger.info(f"[DOWNLOAD_AZURE] Скачиваем '{repo_name}' --> {commit_id[:7]}... auth_method: {auth_method}")
         
         # Специальная обработка для PAT токена
         if auth_method == 'pat' and pat:
@@ -201,20 +201,36 @@ async def download_repo_azure(repo_url, commit_id, extract_path):
                     temp_zip_path = temp_file.name
                     temp_file.write(response.content)
 
+                # Логируем размер загруженного архива
+                archive_size = os.path.getsize(temp_zip_path)
+                logger.info(f"[DOWNLOAD_AZURE] Размер загруженного архива: {archive_size / 1024 / 1024:.2f} MB")
+
                 with zipfile.ZipFile(temp_zip_path) as zip_file:
                     zip_file.extractall(extract_path)
                     # safe_extract(zip_file, extract_path)
+                
+                # Логируем размер распакованного архива
+                extracted_size = 0
+                for root, dirs, files in os.walk(extract_path):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        try:
+                            extracted_size += os.path.getsize(file_path)
+                        except:
+                            pass
+                logger.info(f"[DOWNLOAD_AZURE] Размер распакованного архива: {extracted_size / 1024 / 1024:.2f} MB")
+                
                 download_time = time.time() - download_start
-                logger.info(f"Репозиторий успешно распакован в: {extract_path} (время: {download_time:.2f}с)")
+                logger.info(f"[DOWNLOAD_AZURE] Репозиторий успешно распакован в: {extract_path} (время: {download_time:.2f}с)")
                 os.unlink(temp_zip_path)
                 return extract_path, "Success"
             
             except Exception as e:
-                logger.error(f"Ошибка при распаковке архива: {e}")
+                logger.error(f"[DOWNLOAD_AZURE] Ошибка при распаковке архива: {e}")
                 return_string = f"Ошибка при распаковке архива: {e}"
                 return "", return_string
             
-    logger.error(f"Ошибка при скачивании {repo_name}: {response.status_code}")
+    logger.error(f"[DOWNLOAD_AZURE] Ошибка при скачивании {repo_name}: {response.status_code}")
     return_string = f"Ошибка при скачивании {repo_name}: {response.status_code}"
     return "", return_string
 
@@ -269,54 +285,38 @@ async def download_github_repo(repo_url, commit_id, extract_path):
         repo_url = repo_url.rstrip('/')
         zip_url = f"{repo_url}/archive/{commit_id}.zip"
 
-        logger.info(f"Скачиваем {zip_url}...")
+        logger.info(f"[DOWNLOAD_GIT] Скачиваем {zip_url}...")
         response = requests.get(zip_url, verify=False)
         response.raise_for_status()
 
-        # ИСПРАВЛЕНИЕ: для GitHub убираем корневую папку
-        with zipfile.ZipFile(io.BytesIO(response.content)) as zip_file:
-            extract_github_archive(zip_file, extract_path)
-
-        download_time = time.time() - download_start
-        logger.info(f"Репозиторий успешно скачан и распакован в: {extract_path} (время: {download_time:.2f}с)")
-        return extract_path, "Success"
-    except requests.HTTPError as http_err:
-        logger.error(f"HTTP ошибка: {http_err}")
-        return_string = f"HTTP ошибка: {http_err}"
-        return "", return_string
-    except Exception as err:
-        logger.error(f"Общая ошибка: {err}")
-        return_string = f"Общая ошибка: {err}"
-        return "", return_string
-
-async def download_github_repo(repo_url, commit_id, extract_path):
-    """
-    Скачивает архив репозитория GitHub на указанном коммите и распаковывает его.
-    Исправленная версия без корневой папки в путях.
-    """
-    os.makedirs(extract_path, exist_ok=True)
-    download_start = time.time()
-    try:
-        repo_url = repo_url.rstrip('/')
-        zip_url = f"{repo_url}/archive/{commit_id}.zip"
-
-        logger.info(f"Скачиваем {zip_url}...")
-        response = requests.get(zip_url, verify=False)
-        response.raise_for_status()
+        # Логируем размер загруженного архива
+        archive_size = len(response.content)
+        logger.info(f"[DOWNLOAD_GIT] Размер загруженного архива: {archive_size / 1024 / 1024:.2f} MB")
 
         # ИСПРАВЛЕНИЕ: используем специальную функцию для GitHub архивов
         with zipfile.ZipFile(io.BytesIO(response.content)) as zip_file:
             extract_github_archive(zip_file, extract_path)
 
-        download_time = time.time() - download_start
-        logger.info(f"Репозиторий успешно скачан и распакован в: {extract_path} (время: {download_time:.2f}с)")
+        # Логируем размер распакованной папки
+        extracted_size = 0
+        for root, dirs, files in os.walk(extract_path):
+            for file in files:
+                file_path = os.path.join(root, file)
+                try:
+                    extracted_size += os.path.getsize(file_path)
+                except:
+                    pass
+        logger.info(f"[DOWNLOAD_GIT] Размер распакованного архива: {extracted_size / 1024 / 1024:.2f} MB")
+
+        #download_time = time.time() - download_start
+        #logger.info(f"Репозиторий успешно скачан и распакован в: {extract_path} (время: {download_time:.2f}с)")
         return extract_path, "Success"
     except requests.HTTPError as http_err:
-        logger.error(f"HTTP ошибка: {http_err}")
+        logger.error(f"[DOWNLOAD_GIT] HTTP ошибка: {http_err}")
         return_string = f"HTTP ошибка: {http_err}"
         return "", return_string
     except Exception as err:
-        logger.error(f"Общая ошибка: {err}")
+        logger.error(f"[DOWNLOAD_GIT] Общая ошибка: {err}")
         return_string = f"Общая ошибка: {err}"
         return "", return_string
 
@@ -431,41 +431,67 @@ async def check_ref_and_resolve_git(repo_url: str, ref_type: str, ref: str):
         elif ref_type.lower() == "branch":
             cmd = ["git", "ls-remote", "--heads", repo_url]
         elif ref_type.lower() == "commit":
-            cmd = ["git", "ls-remote", repo_url]
+            # Для GitHub репозиториев используем API
+            if "github.com" in repo_url:
+                try:
+                    # Извлекаем owner и repo из URL
+                    parts = repo_url.rstrip('/').split('/')
+                    if len(parts) >= 2:
+                        owner = parts[-2]
+                        repo_name = parts[-1]
+                        
+                        api_url = f"https://api.github.com/repos/{owner}/{repo_name}/commits/{ref}"
+                        
+                        import requests
+                        response = requests.get(api_url, timeout=10)
+                        if response.status_code == 200:
+                            data = response.json()
+                            return True, data.get('sha', ref), message
+                        elif response.status_code == 404:
+                            return False, None, f"Коммит {ref} не найден"
+                        else:
+                            return False, None, f"GitHub API error: {response.status_code}"
+                    else:
+                        return False, None, "Неверный формат GitHub URL"
+                except Exception as e:
+                    return False, None, f"Ошибка GitHub API: {e}"
         else:
             raise ValueError(f"Invalid ref_type: {ref_type}")
 
+        # Для веток и тегов используем git ls-remote
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
 
-        stdout, _ = await process.communicate()
+        stdout, stderr = await process.communicate()
         if process.returncode != 0:
-            return False, None, message
+            stderr_text = stderr.decode() if stderr else "Unknown error"
+            return False, None, f"Git ls-remote failed: {stderr_text}"
             
         output = stdout.decode()
         lines = output.splitlines()
 
-        if ref_type.lower() == "commit":
-            # For commits, check if any line starts with the commit hash
-            for line in lines:
-                if line.startswith(ref):
-                    return True, ref, message
-            return False, None, message
+        # For tags and branches, find matching reference and extract commit hash
+        ref_suffix = f"/{ref}"
+        for line in lines:
+            if line.endswith(ref_suffix):
+                commit_hash = line.split()[0]
+                return True, commit_hash, message
         
-        else:
-            # For tags and branches, find matching reference and extract commit hash
-            ref_suffix = f"/{ref}"
-            for line in lines:
-                if line.endswith(ref_suffix):
-                    commit_hash = line.split()[0]
-                    return True, commit_hash, message
-            return False, None, message
+        # Также проверяем точное совпадение (для случаев без слеша)
+        for line in lines:
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].endswith(f"/{ref}"):
+                commit_hash = parts[0]
+                return True, commit_hash, message
+        
+        return False, None, f"{ref_type.capitalize()} '{ref}' не найден"
 
-    except Exception:
-        return False, None, message
+    except Exception as error:
+        logger.error(f"Ошибка resolve_git: {error}")
+        return False, None, f"Ошибка resolve_git: {error}"
 
 
 def delete_dir(path: str):
