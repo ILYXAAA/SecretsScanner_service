@@ -428,6 +428,7 @@ def scan_repo_with_model(repo_path: str, project_name: str, request_dict: dict, 
     import os
     import asyncio
     import logging
+    from logging.handlers import RotatingFileHandler
     
     # Настройка логирования в отдельном процессе
     logger = logging.getLogger()
@@ -443,6 +444,17 @@ def scan_repo_with_model(repo_path: str, project_name: str, request_dict: dict, 
                                  datefmt='%d.%m %H:%M:%S')
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
+    
+    # Добавляем файловый обработчик (такой же как в основном процессе)
+    file_handler = RotatingFileHandler(
+        'secrets_scanner_service.log', 
+        maxBytes=10*1024*1024, 
+        backupCount=5,
+        encoding='utf-8'
+    )
+    file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
     
     # Add the project root to Python path
     current_dir = os.path.dirname(os.path.abspath(__file__))

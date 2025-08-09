@@ -40,6 +40,53 @@ class ColoredFormatter(logging.Formatter):
         
         return formatted
 
+class SelectiveFormatter(logging.Formatter):
+    """Formatter with different formats for different modules"""
+    
+    COLORS = {
+        'DEBUG': '\033[36m',    # Cyan
+        'INFO': '\033[32m',     # Green
+        'WARNING': '\033[33m',  # Yellow
+        'ERROR': '\033[31m',    # Red
+        'CRITICAL': '\033[35m', # Magenta
+        'RESET': '\033[0m'      # Reset
+    }
+    
+    # Модули с кратким форматом (без времени и названия модуля)
+    SHORT_FORMAT_MODULES = {
+        'model_loader', 'queue_worker', 'repo_utils'
+    }
+    
+    def format(self, record):
+        # Выбираем формат в зависимости от модуля
+        if record.name in self.SHORT_FORMAT_MODULES:
+            # Краткий формат
+            format_str = '[%(levelname)s] %(name)s: %(message)s'
+        else:
+            # Полный формат с временем и модулем
+            format_str = '%(asctime)s - %(name)s - [%(levelname)s] %(message)s'
+        
+        # Создаем временный форматтер с нужным форматом
+        if record.name in self.SHORT_FORMAT_MODULES:
+            formatter = logging.Formatter(format_str)
+        else:
+            formatter = logging.Formatter(format_str, datefmt='%d.%m %H:%M:%S')
+        
+        # Форматируем сообщение
+        formatted = formatter.format(record)
+        
+        # Добавляем цвет к уровню логирования
+        log_color = self.COLORS.get(record.levelname, self.COLORS['RESET'])
+        reset_color = self.COLORS['RESET']
+        
+        # Заменяем [LEVEL] на цветной вариант
+        formatted = formatted.replace(
+            f'[{record.levelname}]', 
+            f'[{log_color}{record.levelname}{reset_color}]'
+        )
+        
+        return formatted
+
 def get_accurate_model_memory():
     """Get actual loaded model memory usage"""
     try:
@@ -56,10 +103,9 @@ def setup_logging():
     for handler in logger.handlers[:]:
         logger.removeHandler(handler)
     
+    # Создаем кастомный обработчик с селективным форматированием
     console_handler = logging.StreamHandler()
-    # Добавили %(name)s для отображения имени модуля
-    formatter = ColoredFormatter(fmt='%(asctime)s - %(name)s - [%(levelname)s] %(message)s', 
-                                datefmt='%d.%m %H:%M:%S')
+    formatter = SelectiveFormatter()
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
     
