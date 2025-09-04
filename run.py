@@ -252,6 +252,25 @@ def create_default_env_file():
 
     logging.info(".env обновлен базовыми настройками")
 
+def setup_admin_api_key():
+    logging.info("Необходимо настроить ADMIN_API_KEY (используется для административного доступа)")
+    answer = input("Хотите сгенерировать административный токен автоматически? (Y/N)\n>")
+    if answer.lower() in ["y", "ye", "yes"]:
+        admin_key = secrets.token_urlsafe(32)
+        print(f"Сгенерирован ADMIN_API_KEY. Скопируйте его и используйте для административного доступа")
+        print(f"> {admin_key}")
+        input("Нажмите Enter для подтверждения (Консоль будет очищена)")
+        set_key(".env", "ADMIN_API_KEY", admin_key)
+        load_dotenv(override=True)
+        os.system('cls' if os.name == 'nt' else 'clear')
+    else:
+        print("Введите ADMIN_API_KEY")
+        admin_key = input(">")
+        input("Нажмите Enter для подтверждения (Консоль будет очищена)")
+        set_key(".env", "ADMIN_API_KEY", admin_key)
+        load_dotenv(override=True)
+        os.system('cls' if os.name == 'nt' else 'clear')
+
 def is_first_run():
     """Проверяет, является ли это первым запуском"""
     env_file = Path('.env')
@@ -260,7 +279,7 @@ def is_first_run():
     
     # Проверяем содержимое .env файла
     load_dotenv()
-    required_vars = ['HubType', 'MAX_WORKERS', 'HOST', 'PORT', 'LOGIN_KEY', 'PASSWORD_KEY', 'PAT_KEY', 'API_KEY']
+    required_vars = ['HubType', 'MAX_WORKERS', 'HOST', 'PORT', 'LOGIN_KEY', 'PASSWORD_KEY', 'PAT_KEY', 'API_KEY', 'ADMIN_API_KEY']
     
     for var in required_vars:
         value = os.getenv(var)
@@ -287,6 +306,8 @@ def validate_environment():
         setup_password_key()
     if not os.getenv("API_KEY") or os.getenv("API_KEY") == "***":
         setup_api_key()
+    if not os.getenv("ADMIN_API_KEY") or os.getenv("ADMIN_API_KEY") == "***":
+        setup_admin_api_key()
 
     required_files = ["app/main.py", "app/model_loader.py", "app/models.py", "app/queue_worker.py", "app/repo_utils.py",
                       "app/scanner.py", "app/secure_save.py", "Datasets/Dataset_NonSecrets.txt", "Datasets/Dataset_Secrets.txt",
