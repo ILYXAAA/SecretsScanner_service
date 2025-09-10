@@ -28,6 +28,7 @@ dataset_analysis_results.json
 dataset_quality_report.txt
 secrets_patterns.yaml.backup
 wrong_secrets.csv
+Описание эндпоинтов.md
 
 # C extensions
 *.so

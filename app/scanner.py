@@ -29,7 +29,7 @@ def load_rules(rules_file="Settings/rules.yml"):
         with open(rules_file, "r", encoding="UTF-8") as f:
             return yaml.safe_load(f)
     except Exception as error:
-        logger.error(f"Error: {str(error)} Проверьте, существует ли файл ${rules_file}$ с набором правил.")
+        logger.error(f"Error: {str(error)} Проверьте, существует ли файл '{rules_file}' с набором правил.")
 
 def load_other_rules():
     with open('Settings/excluded_files.yml', 'r') as f:
@@ -78,7 +78,7 @@ def check_code_patterns_exists(file_path, patterns):
                 return True
     
     except Exception as e:
-        logger.error(f"Ошибка при чтении кода {file_path}: {e}")
+        logger.error(f"Ошибка при чтении кода '{file_path}': {e}")
     
     return False
 
@@ -284,7 +284,7 @@ def check_manifest_dependencies(file_path, relative_path, frameworks):
                 detected[framework_name] = found_dependencies
     
     except Exception as e:
-        logger.error(f"Ошибка при чтении манифеста {file_path}: {e}")
+        logger.error(f"Ошибка при чтении манифеста '{file_path}': {e}")
     
     return detected
 
@@ -301,7 +301,7 @@ def check_code_patterns(file_path, relative_path, framework_name, patterns):
                 found_patterns.add(pattern)
     
     except Exception as e:
-        logger.error(f"Ошибка при чтении кода {file_path}: {e}")
+        logger.error(f"Ошибка при чтении кода '{file_path}': {e}")
     
     # Возвращаем одну запись на файл, если найдены паттерны
     if found_patterns:
@@ -407,7 +407,7 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=50, max_line_l
             results.extend(all_secrets)
 
     except Exception as error:
-        logger.error(f"Error: {str(error)} — ошибка при обработке {file_path}")
+        logger.error(f"Error: {str(error)} — ошибка при обработке '{file_path}'")
 
     return results
 
@@ -416,8 +416,7 @@ async def search_secrets(file_path, rules, target_dir, max_secrets=50, max_line_
     """Простая обертка для анализа файла"""
     return await _analyze_file(file_path, rules, target_dir, max_secrets, max_line_length, FALSE_POSITIVE_RULES)
 
-
-async def scan_directory_without_callback(projectName, target_dir, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES, skipped_files_from_extraction=None):
+async def scan_directory_without_callback(projectName, target_dir, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES, skipped_files_from_extraction=None, worker_instance=None):
     """Сканирование директории без callback (для использования в процессах)"""
     scan_start = time.time()
     all_results = []
@@ -448,12 +447,28 @@ async def scan_directory_without_callback(projectName, target_dir, rules, EXCLUD
             file_list.append(os.path.join(root, file))
 
     file_collection_time = time.time() - file_collection_start
-    logger.info(f"[{projectName}] Найдено файлов для сканирования: {len(file_list)} (время сбора: {file_collection_time:.2f}с)")
-    logger.info(f"[{projectName}] Пропущены файлы (by rules): {skipped_files}")
+    logger.info(f"['{projectName}'] Найдено файлов для сканирования: '{len(file_list)}' (время сбора: {file_collection_time:.2f}с)")
+    logger.info(f"['{projectName}'] Пропущены файлы (by rules): {'`'.join(skipped_files)}")
     
-    # Process files concurrently in batches
+    # Process files concurrently in batches with time-based heartbeat and progress
     batch_size = 5
+    processed_files = 0
+    total_files = len(file_list)
+    
     for i in range(0, len(file_list), batch_size):
+        # Вычисляем прогресс
+        progress = int((processed_files / total_files) * 100) if total_files > 0 else 0
+        progress_detail = f"Обработано {processed_files} из {total_files} файлов"
+        
+        # Отправляем heartbeat каждые 10 секунд с прогрессом
+        if worker_instance:
+            worker_instance.send_heartbeat_if_needed("scanning", 10, progress, progress_detail)
+            
+            # Проверяем timeout задачи
+            if hasattr(worker_instance, 'current_task') and worker_instance.current_task:
+                if worker_instance.check_task_timeout(worker_instance.current_task):
+                    raise Exception("Task timeout during file scanning")
+        
         batch = file_list[i:i + batch_size]
         
         batch_tasks = [
@@ -465,45 +480,53 @@ async def scan_directory_without_callback(projectName, target_dir, rules, EXCLUD
         
         for results in batch_results:
             all_results.extend(results)
+        
+        processed_files += len(batch)
+
+    # Финальный прогресс сканирования
+    if worker_instance:
+        worker_instance.send_heartbeat("scanning", force=True, progress=100, progress_detail=f"Обработано {total_files} файлов")
 
     # Определение языков программирования
     languages_start = time.time()
     detected_languages = detect_languages(target_dir)
     languages_time = time.time() - languages_start
-    logger.info(f"[{projectName}] Определение языков завершено (время: {languages_time:.2f}с)")
+    logger.info(f"['{projectName}'] Определение языков завершено (время: {languages_time:.2f}с)")
 
     # Определение фреймворков
     frameworks_start = time.time()
     detected_frameworks = detect_frameworks(target_dir)
     frameworks_time = time.time() - frameworks_start
-    logger.info(f"[{projectName}] Определение фреймворков завершено (время: {frameworks_time:.2f}с)")
+    logger.info(f"['{projectName}'] Определение фреймворков завершено (время: {frameworks_time:.2f}с)")
 
     total_scan_time = time.time() - scan_start
-    logger.info(f"[{projectName}] Сканирование завершено. Обработано файлов: {len(file_list)}, найдено секретов: {len(all_results)} (общее время: {total_scan_time:.2f}с)")
+    logger.info(f"['{projectName}'] Сканирование завершено. Обработано файлов: '{len(file_list)}', найдено секретов: '{len(all_results)}' (общее время: {total_scan_time:.2f}с)")
     files_excluded = all_files_count - len(file_list)
     skipped_files_str = ", ".join(skipped_files)
     
     return all_results, files_excluded, all_files_count, skipped_files_str, detected_languages, detected_frameworks
 
-async def scan_repo_without_callback(request, repo_path, projectName, skipped_at_extraction=0, skipped_files_from_extraction=None):
+async def scan_repo_without_callback(request, repo_path, projectName, skipped_at_extraction=0, skipped_files_from_extraction=None, worker_instance=None):
     """Сканирование без callback для использования в отдельных процессах"""
     scan_start = time.time()
     
     rules = load_rules(RULES_FILE)
     EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES = load_other_rules()
     
-    logger.info(f"[{projectName}] Начинаю сканирование")
+    logger.info(f"['{projectName}'] Начинаю сканирование")
     
     if skipped_files_from_extraction is None:
         skipped_files_from_extraction = []
     
-    results, files_excluded, all_files_count, skipped_files, detected_languages, detected_frameworks = await scan_directory_without_callback(projectName, repo_path, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES, skipped_files_from_extraction)
+    results, files_excluded, all_files_count, skipped_files, detected_languages, detected_frameworks = await scan_directory_without_callback(
+        projectName, repo_path, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES, skipped_files_from_extraction, worker_instance
+    )
     
     # Добавляем файлы, пропущенные при распаковке
     files_excluded += skipped_at_extraction
     all_files_count += skipped_at_extraction
     
     total_time = time.time() - scan_start
-    logger.info(f"[{projectName}] Сканирование завершено (общее время: {total_time:.2f}с)")
+    logger.info(f"['{projectName}'] Сканирование завершено (общее время: {total_time:.2f}с)")
     
     return results, files_excluded, all_files_count, skipped_files, detected_languages, detected_frameworks

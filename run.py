@@ -9,6 +9,10 @@ import ipaddress
 from cryptography.fernet import Fernet
 import secrets
 from dotenv import load_dotenv, set_key
+import redis
+import time
+from app.logging_config import setup_logging
+
 os.system("") # Для цветной консоли
 
 # Configure colored logging
@@ -54,7 +58,7 @@ class SelectiveFormatter(logging.Formatter):
     
     # Модули с кратким форматом (без времени и названия модуля)
     SHORT_FORMAT_MODULES = {
-        'model_loader', 'queue_worker', 'repo_utils'
+        'model_loader', 'redis_client', 'repo_utils'
     }
     
     def format(self, record):
@@ -96,32 +100,49 @@ def get_accurate_model_memory():
     except Exception as e:
         return {'error': str(e)}
 
-def setup_logging():
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
+# def setup_logging():
+#     from logging.handlers import RotatingFileHandler
+#     logging.basicConfig(
+#         level=logging.INFO,
+#         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+#         handlers=[
+#             RotatingFileHandler(
+#                 "secrets_scanner_service.log",
+#                 maxBytes=10 * 1024 * 1024,
+#                 backupCount=5,
+#                 encoding="utf-8"
+#             ),
+#             logging.StreamHandler()
+#         ]
+#     )
+#     return logging.getLogger()
+
+# def setup_logging_v2():
+#     logger = logging.getLogger()
+#     logger.setLevel(logging.INFO)
     
-    for handler in logger.handlers[:]:
-        logger.removeHandler(handler)
+#     for handler in logger.handlers[:]:
+#         logger.removeHandler(handler)
     
-    # Создаем кастомный обработчик с селективным форматированием
-    console_handler = logging.StreamHandler()
-    formatter = SelectiveFormatter()
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
+#     # Создаем кастомный обработчик с селективным форматированием
+#     console_handler = logging.StreamHandler()
+#     formatter = SelectiveFormatter()
+#     console_handler.setFormatter(formatter)
+#     logger.addHandler(console_handler)
     
-    from logging.handlers import RotatingFileHandler
-    file_handler = RotatingFileHandler(
-        'secrets_scanner_service.log', 
-        maxBytes=10*1024*1024, 
-        backupCount=5,
-        encoding='utf-8'
-    )
-    # В файл пишем с полной датой
-    file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    file_handler.setFormatter(file_formatter)
-    logger.addHandler(file_handler)
+#     from logging.handlers import RotatingFileHandler
+#     file_handler = RotatingFileHandler(
+#         'secrets_scanner_service.log', 
+#         maxBytes=10*1024*1024, 
+#         backupCount=5,
+#         encoding='utf-8'
+#     )
+#     # В файл пишем с полной датой
+#     file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+#     file_handler.setFormatter(file_formatter)
+#     logger.addHandler(file_handler)
     
-    return logger
+#     return logger
 
 def setup_multiprocessing():
     """Configure multiprocessing for Windows/Linux compatibility"""
@@ -221,11 +242,11 @@ def setup_pat_key():
             print(str(error))
 
 def setup_api_key():
-    logging.info("Необходимо настроить API_KEY (используется для доступа к данному микросервису)")
+    logging.info("Необходимо настроить API_KEY (используется для доступа к данному сервису)")
     answer = input("Хотите сгенерировать токен автоматически? (Y/N)\n>")
     if answer.lower() in ["y", "ye", "yes"]:
         apiKey = secrets.token_urlsafe(32)
-        print(f"Сгенерирован API_KEY. Скопируйте его и используйте для доступа к данному микросервису")
+        print(f"Сгенерирован API_KEY. Скопируйте его и используйте для доступа к данному сервису")
         print(f"> {apiKey}")
         input("Нажмите Enter для подтверждения (Консоль будет очищена)")
         set_key(".env", "API_KEY", apiKey)
@@ -238,19 +259,6 @@ def setup_api_key():
         set_key(".env", "API_KEY", apiKey)
         load_dotenv(override=True)
         os.system('cls' if os.name == 'nt' else 'clear')
-
-def create_default_env_file():
-    """Создает .env файл с базовыми настройками"""
-    if not os.path.exists(".env"):
-        with open('.env', 'w') as f:
-            f.write("")
-    
-    set_key(".env", "HubType", "Azure")
-    set_key(".env", "MAX_WORKERS", "10")
-    set_key(".env", "TEMP_DIR", "tmp/")
-    load_dotenv(override=True)
-
-    logging.info(".env обновлен базовыми настройками")
 
 def setup_admin_api_key():
     logging.info("Необходимо настроить ADMIN_API_KEY (используется для административного доступа)")
@@ -271,6 +279,34 @@ def setup_admin_api_key():
         load_dotenv(override=True)
         os.system('cls' if os.name == 'nt' else 'clear')
 
+def setup_redis_url():
+    logging.info("Необходимо настроить REDIS_URL")
+    default_redis = "redis://localhost:6379/0"
+    answer = input(f"Использовать Redis по умолчанию ({default_redis})? (Y/N)\n>")
+    if answer.lower() in ["y", "ye", "yes"]:
+        redis_url = default_redis
+    else:
+        redis_url = input("Введите REDIS_URL (например: redis://localhost:6379/0)\n>")
+    
+    set_key(".env", "REDIS_URL", redis_url)
+    load_dotenv(override=True)
+    logging.info(f"Redis URL установлен: {redis_url}")
+
+def create_default_env_file():
+    """Создает .env файл с базовыми настройками"""
+    if not os.path.exists(".env"):
+        with open('.env', 'w') as f:
+            f.write("")
+    
+    set_key(".env", "HubType", "Azure")
+    set_key(".env", "MAX_WORKERS", "10")
+    set_key(".env", "TEMP_DIR", "tmp/")
+    set_key(".env", "VALIDATION_THREADS_NUMBER", "5")
+    set_key(".env", "TASK_TIMEOUT_SECONDS", "1800")
+    load_dotenv(override=True)
+
+    logging.info(".env обновлен базовыми настройками")
+
 def is_first_run():
     """Проверяет, является ли это первым запуском"""
     env_file = Path('.env')
@@ -279,7 +315,7 @@ def is_first_run():
     
     # Проверяем содержимое .env файла
     load_dotenv()
-    required_vars = ['HubType', 'MAX_WORKERS', 'HOST', 'PORT', 'LOGIN_KEY', 'PASSWORD_KEY', 'PAT_KEY', 'API_KEY', 'ADMIN_API_KEY']
+    required_vars = ['HubType', 'MAX_WORKERS', 'HOST', 'PORT', 'LOGIN_KEY', 'PASSWORD_KEY', 'PAT_KEY', 'API_KEY', 'ADMIN_API_KEY', 'REDIS_URL']
     
     for var in required_vars:
         value = os.getenv(var)
@@ -287,6 +323,19 @@ def is_first_run():
             return True
     
     return False
+
+def test_redis_connection():
+    """Test Redis connection"""
+    try:
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        r = redis.from_url(redis_url, decode_responses=True)
+        r.ping()
+        logging.info(f"✅ Подключение к Redis успешно: {redis_url}")
+        return True
+    except Exception as e:
+        logging.error(f"❌ Ошибка подключения к Redis: {e}")
+        logging.error("Убедитесь что Redis сервер запущен и доступен")
+        return False
 
 def validate_environment():
     logging.info("Валидация настроек окружения...")
@@ -308,8 +357,14 @@ def validate_environment():
         setup_api_key()
     if not os.getenv("ADMIN_API_KEY") or os.getenv("ADMIN_API_KEY") == "***":
         setup_admin_api_key()
+    if not os.getenv("REDIS_URL"):
+        setup_redis_url()
 
-    required_files = ["app/main.py", "app/model_loader.py", "app/models.py", "app/queue_worker.py", "app/repo_utils.py",
+    # Test Redis connection
+    if not test_redis_connection():
+        return False
+
+    required_files = ["app/main.py", "app/model_loader.py", "app/models.py", "app/redis_client.py", "app/worker.py", "app/repo_utils.py",
                       "app/scanner.py", "app/secure_save.py", "Datasets/Dataset_NonSecrets.txt", "Datasets/Dataset_Secrets.txt",
                       "Settings/excluded_extensions.yml", "Settings/excluded_files.yml", "Settings/false-positive.yml",
                       "Settings/rules.yml", "Settings/login.dat", "Settings/password.dat", "Settings/pat_token.dat"]
@@ -336,6 +391,13 @@ def check_dependencies():
         logging.info("fastapi is installed")
     except ImportError:
         logging.error("fastapi is not installed")
+        return False
+    
+    try:
+        import redis
+        logging.info("redis is installed")
+    except ImportError:
+        logging.error("redis is not installed - run: pip install redis>=4.0.0")
         return False
     
     return True
@@ -375,13 +437,19 @@ def print_startup_info():
     max_workers = os.getenv("MAX_WORKERS", "10")
     hub_type = os.getenv("HubType", "Azure")
     temp_dir = os.getenv("TEMP_DIR", "C:\\")
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    validation_threads = os.getenv("VALIDATION_THREADS_NUMBER", "5")
+    task_timeout = os.getenv("TASK_TIMEOUT_SECONDS", "1800")
     
     print("\n" + "=" * 60)
-    print("SECRET SCANNER SERVICE")
+    print("SECRET SCANNER SERVICE (REDIS ARCHITECTURE)")
     print("=" * 60)
     logging.info(f"Server: http://{config['host']}:{config['port']}")
     logging.info(f"Hub Type: {hub_type.upper()}")
     logging.info(f"Max Workers: {max_workers}")
+    logging.info(f"Validation Threads: {validation_threads}")
+    logging.info(f"Task Timeout: {task_timeout}s")
+    logging.info(f"Redis URL: {redis_url}")
     logging.info(f"Log Level: {config['log_level'].upper()}")
     logging.info(f"Temp Directory: {temp_dir}")
     logging.info(f"Platform: {sys.platform}")
@@ -393,26 +461,41 @@ def print_startup_info():
     # Model memory information
     try:
         print("=" * 60)
-        print("MODEL MEMORY (ACTUAL):")
+        print("MODEL MEMORY (ESTIMATED PER WORKER):")
         print("=" * 60)
         model_stats = get_accurate_model_memory()
         if 'error' not in model_stats:
             logging.info(f"Vectorizer: {model_stats.get('vectorizer_mb', 0):.1f} MB")
             logging.info(f"Model: {model_stats.get('model_mb', 0):.1f} MB")
             logging.info(f"Vocabulary: {model_stats.get('vocabulary_size', 0):,} terms")
-            logging.info(f"Total per process: {model_stats.get('total_mb', 0):.1f} MB")
+            logging.info(f"Total per worker: {model_stats.get('total_mb', 0):.1f} MB")
             logging.info(f"Estimated for {max_workers} workers: {model_stats.get('total_mb', 0) * int(max_workers):.1f} MB")
             print("=" * 60)
         else:
-            logging.warning("Model not loaded yet - will load on first scan")
+            logging.warning("Model not loaded yet - will load in each worker")
     except Exception as e:
         logging.warning(f"Model memory check failed: {e}")
+
 def main():
     """Main startup function"""
     setup_logging()
     print("=" * 60)
-    print("Secret Scanner Service Startup")
+    print("Secret Scanner Service Startup (Redis Architecture)")
     print("=" * 60)
+    import shutil
+    if os.path.exists("tmp"):
+        print("Очистка директории tmp/")
+        for filename in os.listdir("tmp"):
+            file_path = os.path.join("tmp", filename)
+            try:
+                if os.path.isfile(file_path) or os.path.islink(file_path):
+                    os.remove(file_path)  # удаляем файл или ссылку
+                elif os.path.isdir(file_path):
+                    shutil.rmtree(file_path)  # удаляем папку со всем содержимым
+            except Exception as e:
+                print(f"Ошибка при удалении {file_path}: {e}")
+    else:
+        print("Папка tmp не найдена")
     
     try:
         # Check dependencies
@@ -420,6 +503,7 @@ def main():
         if not check_dependencies():
             logging.error("Required dependencies not installed")
             logging.info("Please run: pip install -r requirements.txt")
+            logging.info("Make sure Redis is installed: pip install redis>=4.0.0")
             sys.exit(1)
         
         setup_multiprocessing()
@@ -436,9 +520,14 @@ def main():
         config = get_server_config()
         print("")
         print("=" * 60)
-        print("Starting HTTP server...")
+        print("Starting HTTP server with Redis-based worker architecture...")
         print("=" * 60)
-        uvicorn.run("app.main:app", **config)
+        
+        # Important note about workers
+        logging.info("Workers будут запущены автоматически через FastAPI lifespan")
+        logging.info("Мониторинг workers доступен через admin API endpoints")
+        
+        uvicorn.run("app.main:app", **config, log_config=None)
         
     except KeyboardInterrupt:
         print("\nReceived interrupt signal")

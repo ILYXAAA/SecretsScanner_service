@@ -62,7 +62,7 @@ try:
     password = decrypt_from_file(PASSWORD_FILE, key_name="PASSWORD_KEY")
 except Exception as error:
     logger.error(f"Error: {str(error)}")
-    logger.error("Если это первый запуск - необходимо запустить мастер настройки Auth данных `python app/secure_save.py`")
+    logger.error("Если это первый запуск - необходимо запустить мастер настройки Auth данных 'python app/secure_save.py'")
 
 auth_methods = ["basic", "pat"]  # 'pat', 'basic', 'Negotiate' или None
 
@@ -177,7 +177,7 @@ async def download_repo_azure(repo_url, commit_id, extract_path):
 
     for auth_method in auth_methods:
         download_start = time.time()
-        logger.info(f"[DOWNLOAD_AZURE] Скачиваем '{repo_name}' --> {commit_id[:7]}... auth_method: {auth_method}")
+        logger.info(f"[DOWNLOAD_AZURE] Скачиваем {repo_name} --> '{commit_id[:7]}'... auth_method: '{auth_method}'")
         
         # Специальная обработка для PAT токена
         if auth_method == 'pat' and pat:
@@ -203,7 +203,7 @@ async def download_repo_azure(repo_url, commit_id, extract_path):
 
                 # Логируем размер загруженного архива
                 archive_size = os.path.getsize(temp_zip_path)
-                logger.info(f"[DOWNLOAD_AZURE] Размер загруженного архива: {archive_size / 1024 / 1024:.2f} MB")
+                logger.info(f"[DOWNLOAD_AZURE] Размер загруженного архива: '{archive_size / 1024 / 1024:.2f} MB'")
 
                 with zipfile.ZipFile(temp_zip_path) as zip_file:
                     zip_file.extractall(extract_path)
@@ -218,10 +218,10 @@ async def download_repo_azure(repo_url, commit_id, extract_path):
                             extracted_size += os.path.getsize(file_path)
                         except:
                             pass
-                logger.info(f"[DOWNLOAD_AZURE] Размер распакованного архива: {extracted_size / 1024 / 1024:.2f} MB")
+                logger.info(f"[DOWNLOAD_AZURE] Размер распакованного архива: '{extracted_size / 1024 / 1024:.2f} MB'")
                 
                 download_time = time.time() - download_start
-                logger.info(f"[DOWNLOAD_AZURE] Репозиторий успешно распакован в: {extract_path} (время: {download_time:.2f}с)")
+                logger.info(f"[DOWNLOAD_AZURE] Репозиторий успешно распакован в: '{extract_path}' (время: {download_time:.2f}с)")
                 os.unlink(temp_zip_path)
                 return extract_path, "Success"
             
@@ -230,7 +230,7 @@ async def download_repo_azure(repo_url, commit_id, extract_path):
                 return_string = f"Ошибка при распаковке архива: {e}"
                 return "", return_string
             
-    logger.error(f"[DOWNLOAD_AZURE] Ошибка при скачивании {repo_name}: {response.status_code}")
+    logger.error(f"[DOWNLOAD_AZURE] Ошибка при скачивании '{repo_name}': '{response.status_code}'")
     return_string = f"Ошибка при скачивании {repo_name}: {response.status_code}"
     return "", return_string
 
@@ -291,7 +291,7 @@ async def download_github_repo(repo_url, commit_id, extract_path):
 
         # Логируем размер загруженного архива
         archive_size = len(response.content)
-        logger.info(f"[DOWNLOAD_GIT] Размер загруженного архива: {archive_size / 1024 / 1024:.2f} MB")
+        logger.info(f"[DOWNLOAD_GIT] Размер загруженного архива: '{archive_size / 1024 / 1024:.2f} MB'")
 
         # ИСПРАВЛЕНИЕ: используем специальную функцию для GitHub архивов
         with zipfile.ZipFile(io.BytesIO(response.content)) as zip_file:
@@ -306,7 +306,7 @@ async def download_github_repo(repo_url, commit_id, extract_path):
                     extracted_size += os.path.getsize(file_path)
                 except:
                     pass
-        logger.info(f"[DOWNLOAD_GIT] Размер распакованного архива: {extracted_size / 1024 / 1024:.2f} MB")
+        logger.info(f"[DOWNLOAD_GIT] Размер распакованного архива: '{extracted_size / 1024 / 1024:.2f} MB'")
 
         #download_time = time.time() - download_start
         #logger.info(f"Репозиторий успешно скачан и распакован в: {extract_path} (время: {download_time:.2f}с)")
@@ -336,7 +336,7 @@ async def check_ref_and_resolve_azure(repo_url: str, ref_type: str, ref: str):
 
     for auth_method in auth_methods:
         auth = get_auth(auth_method)
-        logger.info(f"Try to resolve {repo_url} --> {ref_type}. auth_method={auth_method}")
+        logger.info(f"Try to resolve {repo_url} --> '{ref_type}'. auth_method='{auth_method}'")
 
         try:
             server, collection, project, repository = parse_azure_devops_url(repo_url)

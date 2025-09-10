@@ -433,16 +433,10 @@ class SecretClassifier:
                 'error': str(e)
             }
 
-    def filter_secrets(self, ProjectName, secrets: list[dict]) -> list[dict]:
+    def filter_secrets(self, ProjectName, secrets: list[dict], worker_instance=None) -> list[dict]:
         classification_start = time.time()
         """
         Классифицирует каждый элемент словаря в списке secrets по полям "secret" и "context".
-        Если оба поля присутствуют, усредняет confidence между ними.
-        Заполняет поле "severity":
-        - "High" для уверенных секретов (confidence > 0.7)
-        - "Potential" для неуверенных предсказаний или специальных строк
-        
-        Возвращает список словарей с обновленным полем "severity" и "confidence".
         """
         if not secrets:
             return secrets
@@ -455,10 +449,18 @@ class SecretClassifier:
             return secrets
 
         try:
+            total_items = len(secrets)
+            logger.info(f"[{ProjectName}] Начинаю ML классификацию {total_items} элементов")
+            
             # Предсказания для секретов
             X_secret_vec = self.vectorizer.transform(secret_texts)
             preds_secret = self.model.predict(X_secret_vec)
             probs_secret = self.model.predict_proba(X_secret_vec)
+            
+            # Отправляем heartbeat после обработки секретов
+            if worker_instance:
+                progress = 30  # Секреты обработаны - 30% готово
+                worker_instance.send_heartbeat_if_needed("ml_validation", 10, progress, f"Обработано {len(secret_texts)} секретов")
             
             # Предсказания для контекстов (если они есть)
             context_predictions = []
@@ -475,6 +477,11 @@ class SecretClassifier:
                     X_context_vec = self.vectorizer.transform(contexts_to_predict)
                     context_preds = self.model.predict(X_context_vec)
                     context_probs = self.model.predict_proba(X_context_vec)
+                    
+                    # Отправляем heartbeat после обработки контекстов
+                    if worker_instance:
+                        progress = 60  # Контексты обработаны - 60% готово
+                        worker_instance.send_heartbeat_if_needed("ml_validation", 10, progress, f"Обработано {len(contexts_to_predict)} контекстов")
                     
                     # Создаем полный список предсказаний с None для пустых контекстов
                     context_idx = 0
@@ -493,7 +500,24 @@ class SecretClassifier:
                 context_predictions = [None] * len(secrets)
                 context_probabilities = [None] * len(secrets)
 
+            # Обработка результатов с временной проверкой heartbeat и прогрессом
+            total_secrets = len(secrets)
+            processed_secrets = 0
+            
             for i, (item, pred_secret, proba_secret) in enumerate(zip(secrets, preds_secret, probs_secret)):
+                # Вычисляем прогресс (60% уже готово, оставшиеся 40% за обработку результатов)
+                progress = 60 + int((processed_secrets / total_secrets) * 40) if total_secrets > 0 else 60
+                progress_detail = f"Проанализировано {processed_secrets} из {total_secrets} результатов"
+                
+                # Отправляем heartbeat каждые 10 секунд с прогрессом
+                if worker_instance:
+                    worker_instance.send_heartbeat_if_needed("ml_validation", 10, progress, progress_detail)
+                    
+                    # Проверяем timeout задачи
+                    if hasattr(worker_instance, 'current_task') and worker_instance.current_task:
+                        if worker_instance.check_task_timeout(worker_instance.current_task):
+                            raise Exception("Task timeout during ML validation")
+                
                 confidence_secret = proba_secret[1]  # вероятность класса 1 (что это секрет)
                 
                 # Получаем предсказание для контекста если оно есть
@@ -514,8 +538,6 @@ class SecretClassifier:
                     context_weight = 0.8
                     final_confidence = (confidence_secret * secret_weight + confidence_context * context_weight) / (secret_weight + context_weight)
                     item["confidence_averaged"] = True
-                    
-                    #logger.info(f"Secret conf: {confidence_secret:.3f}, Context conf: {confidence_context:.3f}, Avg: {final_confidence:.3f}")
                 else:
                     # Используем только confidence секрета
                     final_confidence = confidence_secret
@@ -532,11 +554,15 @@ class SecretClassifier:
                     
                     if final_confidence > 0.7:
                         item["severity"] = "High"
-                        #logger.info(f"Set HIGH for final confidence {final_confidence:.3f}")
                     else:
                         item["severity"] = "Potential"
-                        #logger.info(f"Set POTENTIAL for final confidence {final_confidence:.3f}")
-                                
+                
+                processed_secrets += 1
+            
+            # Финальный прогресс ML-валидации
+            if worker_instance:
+                worker_instance.send_heartbeat("ml_validation", force=True, progress=100, progress_detail=f"Обработано {total_secrets} секретов")
+                                    
         except Exception as e:
             logger.error(f"Ошибка классификации: {e}")
             # Fallback: mark all as High severity
@@ -555,11 +581,11 @@ def get_model_instance():
     return SecretClassifier(console_mode=False)
 
 # Функция для использования в отдельных процессах
-def filter_secrets_in_process(ProjectName, secrets_list: list[dict]) -> list[dict]:
+def filter_secrets_in_process(ProjectName, secrets_list: list[dict], worker_instance=None) -> list[dict]:
     """Функция для фильтрации секретов в отдельном процессе"""
     try:
         classifier = SecretClassifier(console_mode=False)
-        return classifier.filter_secrets(ProjectName, secrets_list)
+        return classifier.filter_secrets(ProjectName, secrets_list, worker_instance)
     except Exception as e:
         logger.error(f"Ошибка в процессе классификации: {e}")
         # Fallback: mark all as High severity

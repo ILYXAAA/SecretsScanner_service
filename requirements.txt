@@ -13,3 +13,4 @@ scikit_learn==1.7.0
 urllib3==2.5.0
 uvicorn==0.34.3
 python-multipart==0.0.20
+colorlog==6.9.0
