@@ -278,7 +278,7 @@ class Worker:
             os.makedirs(repo_path, exist_ok=True)
             
             # Extract ZIP with size limits
-            max_extract_size = 2 * 1024 * 1024 * 1024  # 2 GB
+            max_extract_size = 2 * 1024 * 1024 * 1024 * 3  # 6 GB
             extracted_size = 0
             
             try:
