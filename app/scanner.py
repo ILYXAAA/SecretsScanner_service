@@ -448,7 +448,7 @@ async def scan_directory_without_callback(projectName, target_dir, rules, EXCLUD
 
     file_collection_time = time.time() - file_collection_start
     logger.info(f"['{projectName}'] Найдено файлов для сканирования: '{len(file_list)}' (время сбора: {file_collection_time:.2f}с)")
-    logger.info(f"['{projectName}'] Пропущены файлы (by rules): {'`'.join(skipped_files)}")
+    logger.info(f"['{projectName}'] Пропущены файлы (by rules): {' '.join([f'`{f}`' for f in skipped_files])}")
     
     # Process files concurrently in batches with time-based heartbeat and progress
     batch_size = 5

@@ -583,7 +583,14 @@ async def download_devzone_repo(repo_url, ref_type, ref_value, extract_path, wor
     
     Note:
         ref_type и ref_value передаются в Jenkins Job как параметры checkout_mode и get_branch соответственно.
+        Если TEST_MODE=True в .env, используется локальный архив Tests/test_devzone.zip для тестирования.
     """
+    # Проверяем тестовый режим
+    test_mode = os.getenv("TEST_MODE", "False").lower() == "true"
+    
+    if test_mode:
+        return await _download_devzone_test_mode(repo_url, ref_type, ref_value, extract_path, worker_instance)
+    
     try:
         # Загружаем параметры из переменных окружения
         jenkins_job_url = os.getenv("DEVZONE_JENKINS_JOB_URL")
@@ -795,5 +802,185 @@ async def download_devzone_repo(repo_url, ref_type, ref_value, extract_path, wor
         
     except Exception as error:
         error_msg = f"Ошибка скачивания DevZone репозитория: {error}"
+        logger.error(error_msg)
+        return "", error_msg
+
+
+async def _download_devzone_test_mode(repo_url, ref_type, ref_value, extract_path, worker_instance=None):
+    """
+    Тестовый режим скачивания DevZone репозитория.
+    Использует локальный архив Tests/test_devzone.zip вместо реального Jenkins Job.
+    С вероятностью 10% эмулирует ошибку для тестирования обработки сбоев.
+    
+    Args:
+        repo_url: URL репозитория DevZone
+        ref_type: тип ref (branch, tag, commit)
+        ref_value: значение ref
+        extract_path: путь для извлечения архива
+        worker_instance: экземпляр Worker для отправки heartbeat (опционально)
+    
+    Returns:
+        (extract_path: str, status: str)
+    """
+    import random
+    
+    # Получаем вероятность ошибки из .env (по умолчанию 10%)
+    error_probability = float(os.getenv("TEST_MODE_ERROR_PROBABILITY", "10")) / 100.0
+    
+    try:
+        # Парсим URL для получения project_path
+        try:
+            project_path = parse_devzone_url(repo_url)
+        except ValueError as e:
+            error_msg = f"Ошибка парсинга URL DevZone: {e}"
+            logger.error(error_msg)
+            return "", error_msg
+        
+        # Валидация ref_type
+        valid_ref_types = ["branch", "tag", "commit"]
+        if ref_type and ref_type.lower() not in valid_ref_types:
+            error_msg = f"Неверный тип ref: {ref_type}. Допустимые значения: {', '.join(valid_ref_types)}"
+            logger.error(error_msg)
+            return "", error_msg
+        
+        extract_path = extract_path if extract_path.endswith("/") else f"{extract_path}/"
+        os.makedirs(extract_path, exist_ok=True)
+        
+        # Путь к тестовому архиву
+        test_archive_path = os.path.join("Tests", "test_devzone.zip")
+        
+        if not os.path.exists(test_archive_path):
+            error_msg = f"Тестовый архив не найден: {test_archive_path}. Создайте архив для тестового режима."
+            logger.error(error_msg)
+            return "", error_msg
+        
+        logger.info(f"[DOWNLOAD_DEVZONE] [TEST_MODE] Начинаю скачивание {project_path} -> '{ref_type}':'{ref_value}'")
+        
+        # Эмулируем запуск Jenkins Job
+        if worker_instance:
+            worker_instance.send_heartbeat("downloading", force=True,
+                progress=10,
+                progress_detail="[TEST_MODE] Запуск Jenkins Job")
+        
+        logger.info(f"[DOWNLOAD_DEVZONE] [TEST_MODE] Jenkins Job запущен")
+        await asyncio.sleep(2)  # Имитация задержки запуска
+        
+        # Случайная ошибка при запуске джобы (30% от всех ошибок)
+        if random.random() < error_probability * 0.3:
+            error_type = random.choice([
+                "Ошибка запуска Jenkins Job: Connection timeout",
+                "Ошибка запуска Jenkins Job: Jenkins server unavailable",
+                "Ошибка запуска Jenkins Job: Invalid parameters",
+                "Ошибка запуска Jenkins Job: Jenkins queue is full"
+            ])
+            logger.error(f"[DOWNLOAD_DEVZONE] [TEST_MODE] {error_type}")
+            return "", error_type
+        
+        # Эмулируем ожидание в очереди
+        if worker_instance:
+            worker_instance.send_heartbeat("downloading", force=True,
+                progress=20,
+                progress_detail="[TEST_MODE] Ожидание в очереди Jenkins")
+        
+        logger.info(f"[DOWNLOAD_DEVZONE] [TEST_MODE] Jenkins Job поставлен в очередь")
+        await asyncio.sleep(3)
+        
+        # Случайная ошибка в очереди (20% от всех ошибок)
+        if random.random() < error_probability * 0.2:
+            error_type = random.choice([
+                "Таймаут ожидания в очереди Jenkins (600 сек)",
+                "Ошибка в очереди Jenkins: Job cancelled",
+                "Ошибка в очереди Jenkins: Build queue timeout"
+            ])
+            logger.error(f"[DOWNLOAD_DEVZONE] [TEST_MODE] {error_type}")
+            return "", error_type
+        
+        # Эмулируем получение номера билда
+        build_number = 123  # Фейковый номер
+        logger.info(f"[DOWNLOAD_DEVZONE] [TEST_MODE] Билд получил номер: {build_number}")
+        await asyncio.sleep(1)
+        
+        # Эмулируем выполнение билда
+        logger.info(f"[DOWNLOAD_DEVZONE] [TEST_MODE] Build #{build_number} выполняется...")
+        
+        heartbeat_interval = 15
+        last_heartbeat = time.time()
+        build_start_time = time.time()
+        build_duration = 10  # 10 секунд имитации выполнения
+        
+        while time.time() - build_start_time < build_duration:
+            elapsed = int(time.time() - build_start_time)
+            
+            # Случайная ошибка во время выполнения билда (40% от всех ошибок)
+            if random.random() < error_probability * 0.4:
+                error_type = random.choice([
+                    f"Jenkins Job завершился с ошибкой: FAILURE",
+                    f"Jenkins Job завершился с ошибкой: ABORTED",
+                    f"Jenkins Job завершился с ошибкой: UNSTABLE",
+                    f"Таймаут выполнения Jenkins Job (1800 сек)"
+                ])
+                logger.error(f"[DOWNLOAD_DEVZONE] [TEST_MODE] {error_type}")
+                return "", error_type
+            
+            # Отправляем heartbeat при необходимости
+            if worker_instance and (time.time() - last_heartbeat) >= heartbeat_interval:
+                progress = min(30 + int((elapsed / build_duration) * 50), 90)
+                worker_instance.send_heartbeat("downloading", force=True,
+                    progress=progress,
+                    progress_detail=f"[TEST_MODE] Jenkins Job #{build_number} выполняется ({elapsed} сек)")
+                last_heartbeat = time.time()
+            
+            if elapsed % 5 == 0 and elapsed > 0:
+                logger.info(f"[DOWNLOAD_DEVZONE] [TEST_MODE] Build #{build_number} выполняется ({elapsed} сек)...")
+            
+            await asyncio.sleep(1)
+        
+        logger.info(f"[DOWNLOAD_DEVZONE] [TEST_MODE] Билд #{build_number} завершён!")
+        
+        # Эмулируем скачивание артефакта
+        if worker_instance:
+            worker_instance.send_heartbeat("downloading", force=True,
+                progress=95,
+                progress_detail="[TEST_MODE] Скачивание архива из Jenkins")
+        
+        logger.info(f"[DOWNLOAD_DEVZONE] [TEST_MODE] Скачиваю артефакт...")
+        await asyncio.sleep(2)
+        
+        # Случайная ошибка при скачивании артефакта (10% от всех ошибок)
+        if random.random() < error_probability * 0.1:
+            error_type = random.choice([
+                "Ошибка скачивания артефакта из Jenkins: Artifact not found",
+                "Ошибка скачивания артефакта из Jenkins: Connection timeout",
+                "Ошибка скачивания артефакта из Jenkins: File corrupted"
+            ])
+            logger.error(f"[DOWNLOAD_DEVZONE] [TEST_MODE] {error_type}")
+            return "", error_type
+        
+        # Копируем и распаковываем тестовый архив
+        logger.info(f"[DOWNLOAD_DEVZONE] [TEST_MODE] Распаковываю архив...")
+        
+        if worker_instance:
+            worker_instance.send_heartbeat("downloading", force=True,
+                progress=98,
+                progress_detail="[TEST_MODE] Распаковка архива")
+        
+        try:
+            with zipfile.ZipFile(test_archive_path) as zip_file:
+                zip_file.extractall(extract_path)
+            logger.info(f"[DOWNLOAD_DEVZONE] [TEST_MODE] Архив распакован в: {extract_path}")
+        except zipfile.BadZipFile:
+            error_msg = "Тестовый архив поврежден или не является валидным ZIP архивом"
+            logger.error(error_msg)
+            return "", error_msg
+        except Exception as e:
+            error_msg = f"Ошибка распаковки тестового архива: {e}"
+            logger.error(error_msg)
+            return "", error_msg
+        
+        logger.info(f"[DOWNLOAD_DEVZONE] [TEST_MODE] Репозиторий успешно скачан в: {extract_path}")
+        return extract_path, "Success"
+        
+    except Exception as error:
+        error_msg = f"Ошибка в тестовом режиме DevZone: {error}"
         logger.error(error_msg)
         return "", error_msg
