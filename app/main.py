@@ -2,7 +2,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Header, Depe
 from fastapi.responses import JSONResponse
 from app.models import ScanRequest, PATTokenRequest, RulesContent, MultiScanRequest, MultiScanResponseItem
 from app.redis_client import get_redis_client
-from app.repo_utils import check_ref_and_resolve_git, check_ref_and_resolve_azure
+from app.repo_utils import check_ref_and_resolve_git, check_ref_and_resolve_azure, check_ref_and_resolve_devzone
 import asyncio
 import os
 import yaml
@@ -323,21 +323,33 @@ async def health():
 # === Validation Helper ===
 async def validate_ref_async(repo_url: str, ref_type: str, ref: str):
     """Async wrapper for ref validation with timeout"""
-    loop = asyncio.get_event_loop()
-    
-    def validate_ref_sync():
-        if HubType.lower() == "github":
-            return asyncio.run(check_ref_and_resolve_git(repo_url, ref_type, ref))
-        else:
-            return asyncio.run(check_ref_and_resolve_azure(repo_url, ref_type, ref))
-    
-    try:
-        return await asyncio.wait_for(
-            loop.run_in_executor(validation_pool, validate_ref_sync),
-            timeout=30  # 30 seconds timeout for validation
-        )
-    except asyncio.TimeoutError:
-        raise ValueError(f"Validation timeout for {ref_type} '{ref}' in repository {repo_url}")
+    # Определяем тип репозитория по URL
+    if "devzone.local" in repo_url.lower():
+        # DevZone репозиторий - используем прямую async функцию
+        try:
+            return await asyncio.wait_for(
+                check_ref_and_resolve_devzone(repo_url, ref_type, ref),
+                timeout=30  # 30 seconds timeout for validation
+            )
+        except asyncio.TimeoutError:
+            raise ValueError(f"Validation timeout for {ref_type} '{ref}' in repository {repo_url}")
+    else:
+        # Azure DevOps или GitHub - используем thread pool
+        loop = asyncio.get_event_loop()
+        
+        def validate_ref_sync():
+            if HubType.lower() == "github":
+                return asyncio.run(check_ref_and_resolve_git(repo_url, ref_type, ref))
+            else:
+                return asyncio.run(check_ref_and_resolve_azure(repo_url, ref_type, ref))
+        
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(validation_pool, validate_ref_sync),
+                timeout=30  # 30 seconds timeout for validation
+            )
+        except asyncio.TimeoutError:
+            raise ValueError(f"Validation timeout for {ref_type} '{ref}' in repository {repo_url}")
 
 # === Multi-Scanning Endpoint ===
 @app.post("/multi_scan", dependencies=[Depends(validate_api_key)])
@@ -367,6 +379,20 @@ async def multi_scan(request: MultiScanRequest):
         # Validate all repositories first with improved error handling
         for i, repo in enumerate(request.repositories):
             try:
+                # DevZone репозитории не поддерживаются через multi_scan
+                if "devzone.local" in repo.RepoUrl.lower():
+                    all_resolved = False
+                    response_data.append(MultiScanResponseItem(
+                        ProjectName=repo.ProjectName,
+                        RefType=repo.RefType,
+                        Ref=repo.Ref,
+                        commit="not_supported"
+                    ))
+                    logger.error(f"DevZone репозитории не поддерживаются через multi_scan: '{repo.ProjectName}'")
+                    if not error_message:
+                        error_message = "DevZone репозитории не поддерживаются через multi_scan"
+                    continue
+                
                 logger.info(f"Валидирую репозиторий {i+1}/{len(request.repositories)}: {repo.ProjectName}")
                 exists, commit, message = await validate_ref_async(repo.RepoUrl, repo.RefType, repo.Ref)
                 
@@ -509,13 +535,20 @@ async def scan(request: ScanRequest):
             else:
                 raise ValueError(f"{request.RefType} '{request.Ref}' не найден в репозитории {request.RepoUrl}")
         
-        logger.info(f"Commit resolved '{commit[0:8]}'.. для '{request.ProjectName}'")
+        # Для DevZone commit = ref, для остальных это commit hash
+        if "devzone.local" in request.RepoUrl.lower():
+            # DevZone: используем ref напрямую как commit
+            commit_for_task = commit  # commit уже содержит ref_value из check_ref_and_resolve_devzone
+            logger.info(f"DevZone ref resolved '{request.RefType}':'{commit}' для '{request.ProjectName}'")
+        else:
+            commit_for_task = commit
+            logger.info(f"Commit resolved '{commit[0:8]}'.. для '{request.ProjectName}'")
 
         # Add to Redis queue with priority 1 (normal priority)
         task_data = {
             "type": "scan",
             "request": request.dict(),
-            "commit": commit
+            "commit": commit_for_task
         }
         
         if redis_client.push_task(task_data, priority=1):

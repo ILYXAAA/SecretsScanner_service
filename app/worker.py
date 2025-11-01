@@ -216,8 +216,16 @@ class Worker:
             
             repo_url = task["repo_url"]
             commit = task["commit"]
+            ref_type = task.get("ref_type")  # Для DevZone
+            ref = task.get("ref")  # Для DevZone
             
-            self.logger.info(f"Скачиваю репозиторий '{repo_url}' -> '{commit[:8]}'...")
+            # Для DevZone используем ref_type и ref из задачи
+            is_devzone = "devzone.local" in repo_url.lower()
+            if is_devzone:
+                self.logger.info(f"Скачиваю DevZone репозиторий '{repo_url}' -> '{ref_type}':'{ref}'...")
+            else:
+                commit_short = commit[:8] if len(commit) >= 8 else commit
+                self.logger.info(f"Скачиваю репозиторий '{repo_url}' -> '{commit_short}'...")
             
             if self.check_task_timeout(task):
                 return "", "", "Task timeout during download"
@@ -229,12 +237,23 @@ class Worker:
             )
             
             try:
-                extracted_path, status = await asyncio.wait_for(
-                    download_repo(repo_url, commit, temp_dir),
-                    timeout=600  # 10 minutes max for download
-                )
+                # Для DevZone задач увеличиваем таймаут до 30 минут
+                download_timeout = 1800 if is_devzone else 600  # 30 минут для DevZone, 10 минут для остальных
+                
+                # Для DevZone передаем ref_type, для остальных используем commit
+                if is_devzone:
+                    extracted_path, status = await asyncio.wait_for(
+                        download_repo(repo_url, ref or commit, temp_dir, worker_instance=self, ref_type=ref_type),
+                        timeout=download_timeout
+                    )
+                else:
+                    extracted_path, status = await asyncio.wait_for(
+                        download_repo(repo_url, commit, temp_dir, worker_instance=self),
+                        timeout=download_timeout
+                    )
             except asyncio.TimeoutError:
-                return "", temp_dir, "Download timeout exceeded (10 minutes)"
+                timeout_msg = f"Download timeout exceeded ({download_timeout // 60} minutes)"
+                return "", temp_dir, timeout_msg
             
             if not extracted_path:
                 return "", temp_dir, f"Download failed: {status}"

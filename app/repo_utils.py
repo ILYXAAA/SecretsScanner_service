@@ -103,12 +103,39 @@ def parse_azure_devops_url(repo_url):
 
     return server, collection, project, repository
 
-async def download_repo(repo_url, commit_id, extract_path):
+async def download_repo(repo_url, commit_id, extract_path, worker_instance=None, ref_type=None):
+    """
+    Скачивает репозиторий. Определяет тип репозитория по URL.
+    
+    Args:
+        repo_url: URL репозитория
+        commit_id: commit hash или ref (для DevZone используется ref напрямую)
+        extract_path: путь для извлечения
+        worker_instance: экземпляр Worker для отправки heartbeat (опционально)
+        ref_type: тип ref для DevZone (branch, tag, commit) - опционально
+    
+    Returns:
+        (extracted_path: str, status: str)
+    """
     extracted_path = ""
-    if HubType.lower() == "azure":
+    
+    # Определяем тип репозитория по URL
+    if "devzone.local" in repo_url.lower():
+        # DevZone репозиторий - используем commit_id как ref_value, ref_type из параметра
+        ref_value = commit_id
+        # Если ref_type не передан, используем branch по умолчанию
+        devzone_ref_type = ref_type if ref_type else "branch"
+        
+        extracted_path, status = await download_devzone_repo(
+            repo_url, devzone_ref_type, ref_value, extract_path, worker_instance
+        )
+    elif HubType and HubType.lower() == "azure":
         extracted_path, status = await download_repo_azure(repo_url, commit_id, extract_path)
-    elif HubType.lower() == "github":
+    elif HubType and HubType.lower() == "github":
         extracted_path, status = await download_github_repo(repo_url, commit_id, extract_path)
+    else:
+        return "", f"Неизвестный тип репозитория или HubType не задан"
+    
     return extracted_path, status
 
 def safe_extract(zip_file, extract_path):
@@ -497,3 +524,276 @@ async def check_ref_and_resolve_git(repo_url: str, ref_type: str, ref: str):
 def delete_dir(path: str):
     shutil.rmtree(path, ignore_errors=True)
 
+
+def parse_devzone_url(repo_url):
+    """Парсит URL DevZone репозитория вида https://git.devzone.local/devzone/project/repo"""
+    parsed = urlparse(repo_url)
+    path_parts = parsed.path.strip("/").split("/")
+    
+    if len(path_parts) < 3:
+        raise ValueError("URL DevZone некорректен: недостаточно частей пути")
+    
+    # Извлекаем путь для Jenkins Job: devzone/project/repo
+    if path_parts[0] != "devzone":
+        raise ValueError("URL DevZone должен начинаться с /devzone/")
+    
+    project_path = "/".join(path_parts)
+    project_path = project_path if project_path.endswith(".git") else project_path + ".git"
+    
+    return project_path
+
+
+async def check_ref_and_resolve_devzone(repo_url: str, ref_type: str, ref: str):
+    """
+    Проверка ref для DevZone репозитория.
+    Для DevZone валидация ref не требуется (Jenkins Job это сделает).
+    
+    Args:
+        repo_url: URL DevZone репозитория
+        ref_type: "branch", "tag" или "commit"
+        ref: ref_value (имя ветки/тега или хэш коммита)
+    
+    Returns:
+        (существует: bool, ref_value: str, сообщение: str)
+        ref_value возвращается как есть (это значение, которое отправится в Jenkins Job)
+    """
+    # Валидация ref_type
+    valid_ref_types = ["branch", "tag", "commit"]
+    if ref_type.lower() not in valid_ref_types:
+        return False, None, f"Неверный тип ref: {ref_type}. Допустимые значения: {', '.join(valid_ref_types)}"
+    
+    # Для DevZone просто возвращаем ref_value как есть (Jenkins Job сам проверит)
+    logger.info(f"DevZone ref проверка для {repo_url}: {ref_type}='{ref}' (валидация выполнится в Jenkins Job)")
+    return True, ref, ""
+
+
+async def download_devzone_repo(repo_url, ref_type, ref_value, extract_path, worker_instance=None):
+    """
+    Асинхронная функция скачивания DevZone репозитория через Jenkins Job.
+    
+    Args:
+        repo_url: URL репозитория DevZone
+        ref_type: тип ref (branch, tag, commit)
+        ref_value: значение ref (имя ветки/тега или хэш коммита)
+        extract_path: путь для извлечения архива
+        worker_instance: экземпляр Worker для отправки heartbeat (опционально)
+    
+    Returns:
+        (extract_path: str, status: str)
+    
+    Note:
+        ref_type и ref_value передаются в Jenkins Job как параметры checkout_mode и get_branch соответственно.
+    """
+    try:
+        # Загружаем параметры из переменных окружения
+        jenkins_job_url = os.getenv("DEVZONE_JENKINS_JOB_URL")
+        jenkins_login = os.getenv("JENKINS_LOGIN")
+        jenkins_api_token = os.getenv("JENKINS_API_TOKEN")
+        
+        if not jenkins_job_url or not jenkins_login or not jenkins_api_token:
+            error_msg = "Не заданы переменные окружения для Jenkins (DEVZONE_JENKINS_JOB_URL, JENKINS_LOGIN, JENKINS_API_TOKEN)"
+            logger.error(error_msg)
+            return "", error_msg
+        
+        # Парсим URL для получения project_path
+        try:
+            project_path = parse_devzone_url(repo_url)
+        except ValueError as e:
+            error_msg = f"Ошибка парсинга URL DevZone: {e}"
+            logger.error(error_msg)
+            return "", error_msg
+        
+        # Валидация ref_type
+        valid_ref_types = ["branch", "tag", "commit"]
+        if ref_type.lower() not in valid_ref_types:
+            error_msg = f"Неверный тип ref: {ref_type}. Допустимые значения: {', '.join(valid_ref_types)}"
+            logger.error(error_msg)
+            return "", error_msg
+        
+        extract_path = extract_path if extract_path.endswith("/") else f"{extract_path}/"
+        os.makedirs(extract_path, exist_ok=True)
+        
+        logger.info(f"[DOWNLOAD_DEVZONE] Скачиваем {project_path} -> '{ref_type}':'{ref_value}'")
+        
+        # Создаем сессию для Jenkins API
+        session = requests.Session()
+        session.auth = (jenkins_login, jenkins_api_token)
+        session.verify = False
+        
+        # Параметры для Jenkins Job
+        params = {
+            "project_path": project_path,
+            "get_branch": ref_value,
+            "checkout_mode": ref_type.lower()
+        }
+        
+        # 1. Запуск джобы с параметрами
+        logger.info(f"[DOWNLOAD_DEVZONE] Запускаю Jenkins Job: {jenkins_job_url}")
+        try:
+            r = session.post(f"{jenkins_job_url}buildWithParameters", params=params, timeout=30)
+            r.raise_for_status()
+        except requests.RequestException as e:
+            error_msg = f"Ошибка запуска Jenkins Job: {e}"
+            logger.error(error_msg)
+            return "", error_msg
+        
+        queue_url = r.headers.get("Location")
+        if not queue_url:
+            error_msg = "Не удалось получить URL очереди Jenkins"
+            logger.error(error_msg)
+            return "", error_msg
+        
+        logger.info(f"[DOWNLOAD_DEVZONE] Jenkins Job поставлен в очередь: {queue_url}")
+        
+        # 2. Ждём, пока билд будет назначен и появится номер
+        build_number = None
+        queue_wait_start = time.time()
+        queue_timeout = 600  # 10 минут на ожидание в очереди
+        heartbeat_interval = 15  # Отправлять heartbeat каждые 15 секунд
+        last_heartbeat = time.time()
+        
+        while build_number is None:
+            # Проверяем таймаут ожидания в очереди
+            if time.time() - queue_wait_start > queue_timeout:
+                error_msg = f"Таймаут ожидания в очереди Jenkins ({queue_timeout} сек)"
+                logger.error(error_msg)
+                return "", error_msg
+            
+            # Отправляем heartbeat при необходимости
+            if worker_instance and (time.time() - last_heartbeat) >= heartbeat_interval:
+                worker_instance.send_heartbeat("downloading", force=True, 
+                    progress=10, 
+                    progress_detail=f"Ожидание Jenkins Job в очереди ({(time.time() - queue_wait_start):.0f} сек)")
+                last_heartbeat = time.time()
+            
+            try:
+                r = session.get(f"{queue_url}api/json", timeout=10)
+                r.raise_for_status()
+                queue_data = r.json()
+                
+                if "executable" in queue_data and queue_data["executable"] is not None:
+                    build_number = queue_data["executable"]["number"]
+                    logger.info(f"[DOWNLOAD_DEVZONE] Билд получил номер: {build_number}")
+                    break
+                
+                await asyncio.sleep(2)
+                
+            except requests.RequestException as e:
+                logger.warning(f"[DOWNLOAD_DEVZONE] Ошибка проверки очереди: {e}, повтор через 5 сек")
+                await asyncio.sleep(5)
+                continue
+        
+        # 3. Ждём завершения билда
+        build_wait_start = time.time()
+        build_timeout = 1800  # 30 минут на выполнение билда
+        counter = 0
+        
+        while True:
+            # Проверяем таймаут выполнения билда
+            if time.time() - build_wait_start > build_timeout:
+                error_msg = f"Таймаут выполнения Jenkins Job ({build_timeout} сек)"
+                logger.error(error_msg)
+                return "", error_msg
+            
+            # Отправляем heartbeat при необходимости
+            if worker_instance and (time.time() - last_heartbeat) >= heartbeat_interval:
+                progress = min(50 + int((time.time() - build_wait_start) / build_timeout * 40), 90)
+                worker_instance.send_heartbeat("downloading", force=True,
+                    progress=progress,
+                    progress_detail=f"Jenkins Job #{build_number} выполняется ({(time.time() - build_wait_start):.0f} сек)")
+                last_heartbeat = time.time()
+            
+            try:
+                r = session.get(f"{jenkins_job_url}{build_number}/api/json", timeout=10)
+                r.raise_for_status()
+                data = r.json()
+                
+                if not data.get("building", False):
+                    logger.info(f"[DOWNLOAD_DEVZONE] Билд #{build_number} завершён!")
+                    break
+                
+                if counter % 30 == 0:  # Логируем каждые 30 секунд
+                    logger.info(f"[DOWNLOAD_DEVZONE] Build #{build_number} выполняется ({counter} сек)...")
+                
+                await asyncio.sleep(5)
+                counter += 5
+                
+            except requests.RequestException as e:
+                logger.warning(f"[DOWNLOAD_DEVZONE] Ошибка проверки статуса билда: {e}, повтор через 5 сек")
+                await asyncio.sleep(5)
+                continue
+        
+        # Проверяем результат билда
+        try:
+            r = session.get(f"{jenkins_job_url}{build_number}/api/json", timeout=10)
+            r.raise_for_status()
+            build_data = r.json()
+            
+            if build_data.get("result") != "SUCCESS":
+                error_msg = f"Jenkins Job завершился с ошибкой: {build_data.get('result', 'UNKNOWN')}"
+                logger.error(error_msg)
+                return "", error_msg
+        except requests.RequestException as e:
+            logger.warning(f"[DOWNLOAD_DEVZONE] Не удалось проверить результат билда: {e}")
+        
+        # 4. Скачиваем артефакты
+        archive_name = "repository_archive1.zip"
+        artifact_url = f"{jenkins_job_url}{build_number}/execution/node/3/ws/{archive_name}"
+        
+        logger.info(f"[DOWNLOAD_DEVZONE] Скачиваю артефакт: {artifact_url}")
+        
+        if worker_instance:
+            worker_instance.send_heartbeat("downloading", force=True,
+                progress=95,
+                progress_detail="Скачивание архива из Jenkins")
+        
+        try:
+            resp = session.get(artifact_url, timeout=300, stream=True)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            error_msg = f"Ошибка скачивания артефакта из Jenkins: {e}"
+            logger.error(error_msg)
+            return "", error_msg
+        
+        # Сохраняем архив во временный файл
+        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as temp_file:
+            temp_zip_path = temp_file.name
+            for chunk in resp.iter_content(chunk_size=8192):
+                temp_file.write(chunk)
+        
+        # Распаковываем архив
+        logger.info(f"[DOWNLOAD_DEVZONE] Распаковываю архив...")
+        
+        if worker_instance:
+            worker_instance.send_heartbeat("downloading", force=True,
+                progress=98,
+                progress_detail="Распаковка архива")
+        
+        try:
+            with zipfile.ZipFile(temp_zip_path) as zip_file:
+                zip_file.extractall(extract_path)
+            logger.info(f"[DOWNLOAD_DEVZONE] Архив распакован в: {extract_path}")
+        except zipfile.BadZipFile:
+            error_msg = "Скачанный файл не является валидным ZIP архивом"
+            logger.error(error_msg)
+            os.unlink(temp_zip_path)
+            return "", error_msg
+        except Exception as e:
+            error_msg = f"Ошибка распаковки архива: {e}"
+            logger.error(error_msg)
+            os.unlink(temp_zip_path)
+            return "", error_msg
+        
+        # Удаляем временный ZIP файл
+        try:
+            os.unlink(temp_zip_path)
+        except Exception as e:
+            logger.warning(f"[DOWNLOAD_DEVZONE] Не удалось удалить временный файл: {e}")
+        
+        logger.info(f"[DOWNLOAD_DEVZONE] Репозиторий успешно скачан в: {extract_path}")
+        return extract_path, "Success"
+        
+    except Exception as error:
+        error_msg = f"Ошибка скачивания DevZone репозитория: {error}"
+        logger.error(error_msg)
+        return "", error_msg
