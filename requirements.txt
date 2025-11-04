@@ -14,3 +14,5 @@ urllib3==2.5.0
 uvicorn==0.34.3
 python-multipart==0.0.20
 colorlog==6.9.0
+redis==7.0.1
+psutil==7.1.3
