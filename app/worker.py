@@ -39,6 +39,7 @@ class Worker:
         self.paused = False
         self.current_task = None
         self.model_loaded = False
+        self.model_version = None
         self.last_heartbeat_sent = 0
         self.startup_complete = False
         
@@ -61,7 +62,18 @@ class Worker:
             start_time = time.time()
             
             from app.model_loader import get_model_instance
-            get_model_instance()
+            from app.model_version_manager import get_current_model_version
+            
+            # Получаем версию модели при старте воркера и сохраняем её
+            version = get_current_model_version()
+            if not version:
+                raise ValueError("Не удалось определить версию модели")
+            
+            self.model_version = version
+            self.logger.info(f"Используется версия модели: {version}")
+            
+            # Загружаем модель с конкретной версией, чтобы воркер всегда использовал ту же версию
+            get_model_instance(version=version)
             
             load_time = time.time() - start_time
             self.model_loaded = True
@@ -125,7 +137,8 @@ class Worker:
                 status, 
                 current_task_id, 
                 progress, 
-                progress_detail
+                progress_detail,
+                self.model_version
             )
             
             if success:
@@ -418,7 +431,7 @@ class Worker:
             try:
                 filtered_results = await asyncio.wait_for(
                     asyncio.get_event_loop().run_in_executor(
-                        None, filter_secrets_in_process, project_name, results
+                        None, filter_secrets_in_process, project_name, results, self
                     ),
                     timeout=300  # 5 minutes max for ML filtering
                 )
@@ -672,7 +685,7 @@ class Worker:
         startup_start = time.time()
         
         try:
-            # Register with Redis
+            # Register with Redis (model_version will be set after model loading)
             if not self.redis_client.register_worker(self.worker_id, self.pid):
                 raise Exception("Failed to register worker with Redis")
             
@@ -681,6 +694,10 @@ class Worker:
             
             # Load ML model
             self.load_model()
+            
+            # Update worker registration with model version
+            if self.model_version:
+                self.redis_client.update_worker_model_version(self.worker_id, self.model_version)
             
             # Mark startup as complete
             self.startup_complete = True

@@ -499,7 +499,8 @@ class RedisClient:
                 "last_heartbeat": time.time(),
                 "current_task_id": None,
                 "tasks_completed": 0,
-                "tasks_failed": 0
+                "tasks_failed": 0,
+                "model_version": None
             }
             
             # Use atomic operation
@@ -554,7 +555,7 @@ class RedisClient:
             logger.error(f"Ошибка обновления прогресса задачи '{task_id}': {e}")
             return False
 
-    def update_worker_heartbeat(self, worker_id: str, status: str = "free", current_task_id: str = None, task_progress: int = None, task_detail: str = None) -> bool:
+    def update_worker_heartbeat(self, worker_id: str, status: str = "free", current_task_id: str = None, task_progress: int = None, task_detail: str = None, model_version: str = None) -> bool:
         """Update worker heartbeat atomically with progress info"""
         try:
             lua_script = """
@@ -564,6 +565,7 @@ class RedisClient:
                 local current_task_id = ARGV[3]
                 local task_progress = tonumber(ARGV[4])
                 local task_detail = ARGV[5]
+                local model_version = ARGV[6]
                 
                 if current_task_id == 'nil' then
                     current_task_id = nil
@@ -573,6 +575,9 @@ class RedisClient:
                 end
                 if task_detail == 'nil' then
                     task_detail = nil
+                end
+                if model_version == 'nil' then
+                    model_version = nil
                 end
                 
                 -- Get current worker or create new
@@ -593,7 +598,8 @@ class RedisClient:
                         current_task_progress = nil,
                         current_task_detail = nil,
                         tasks_completed = 0,
-                        tasks_failed = 0
+                        tasks_failed = 0,
+                        model_version = nil
                     }
                 end
                 
@@ -603,6 +609,9 @@ class RedisClient:
                 worker.current_task_id = current_task_id
                 worker.current_task_progress = task_progress
                 worker.current_task_detail = task_detail
+                if model_version then
+                    worker.model_version = model_version
+                end
                 
                 -- Save back
                 local updated_worker_json = cjson.encode(worker)
@@ -615,14 +624,32 @@ class RedisClient:
             task_id_arg = current_task_id if current_task_id else 'nil'
             progress_arg = task_progress if task_progress is not None else 0
             detail_arg = task_detail if task_detail else 'nil'
+            model_version_arg = model_version if model_version else 'nil'
             
             script = self.redis_client.register_script(lua_script)
-            script(keys=[worker_id], args=[status, current_time, task_id_arg, progress_arg, detail_arg])
+            script(keys=[worker_id], args=[status, current_time, task_id_arg, progress_arg, detail_arg, model_version_arg])
             
             return True
             
         except Exception as e:
             logger.error(f"Ошибка обновления heartbeat воркера '{worker_id}': {e}")
+            return False
+
+    def update_worker_model_version(self, worker_id: str, model_version: str) -> bool:
+        """Update worker model version"""
+        try:
+            worker_json = self.redis_client.hget("workers:all", worker_id)
+            if worker_json:
+                worker = json.loads(worker_json)
+                worker["model_version"] = model_version
+                self.redis_client.hset("workers:all", worker_id, json.dumps(worker, ensure_ascii=False))
+                logger.info(f"Версия модели воркера '{worker_id}' обновлена: {model_version}")
+                return True
+            else:
+                logger.warning(f"Воркер '{worker_id}' не найден для обновления версии модели")
+                return False
+        except Exception as e:
+            logger.error(f"Ошибка обновления версии модели воркера '{worker_id}': {e}")
             return False
 
     def unregister_worker(self, worker_id: str) -> bool:

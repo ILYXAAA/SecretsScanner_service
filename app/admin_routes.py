@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Header, Depends, Query
+from fastapi import APIRouter, HTTPException, Header, Depends, Query, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 import os
 import secrets
@@ -8,6 +8,10 @@ import time
 import multiprocessing
 import logging
 import threading
+import tempfile
+import shutil
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 from app.redis_client import get_redis_client
 from typing import List, Optional
@@ -21,6 +25,9 @@ ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")
 worker_processes = {}
 service_start_time = time.time()
 worker_management_lock = threading.Lock()
+
+# Thread pool for model training (CPU-intensive operations)
+model_training_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ModelTraining")
 
 def set_service_start_time():
     """Установить время старта сервиса (вызывается из main.py)"""
@@ -274,7 +281,9 @@ async def get_workers():
                 "process_threads": process_info.get("num_threads", 0),
                 # Добавляем поля прогресса
                 "current_task_progress": worker_data.get("current_task_progress"),
-                "current_task_detail": worker_data.get("current_task_detail")
+                "current_task_detail": worker_data.get("current_task_detail"),
+                # Версия модели
+                "model_version": worker_data.get("model_version")
             }
             result.append(worker_info)
         
@@ -294,6 +303,7 @@ async def get_workers():
                     "current_task_detail": None,
                     "tasks_completed": 0,
                     "tasks_failed": 0,
+                    "model_version": None,
                     "process_exists": True,
                     "process_alive": process_info.get("alive", False),
                     "process_pid": process_info.get("pid"),
@@ -781,3 +791,120 @@ async def workers_health():
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка проверки здоровья воркеров: {e}")
+
+# === Model Management ===
+
+@admin_router.get("/models/info", dependencies=[Depends(validate_admin_api_key)])
+async def get_models_info():
+    """Get information about all models and datasets"""
+    try:
+        from app.model_version_manager import get_models_info
+        info = get_models_info()
+        return {
+            "status": "success",
+            "data": info
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка получения информации о моделях: {e}")
+
+@admin_router.post("/models/datasets/upload", dependencies=[Depends(validate_admin_api_key)])
+async def upload_dataset_version(
+    version: str = Form(..., description="Version of dataset (e.g., v1.1)"),
+    description: str = Form(..., description="Description of the dataset"),
+    zip_file: UploadFile = File(..., description="Datasets.zip file")
+):
+    """Upload new dataset version"""
+    try:
+        # Валидация версии
+        import re
+        if not re.match(r'^v\d+\.\d+$', version):
+            raise HTTPException(status_code=400, detail=f"Неверный формат версии: {version}. Ожидается формат vX.Y")
+        
+        # Проверяем, что версия датасета не существует
+        from app.model_version_manager import get_all_dataset_versions
+        existing_versions = get_all_dataset_versions()
+        if version in existing_versions:
+            raise HTTPException(
+                status_code=409, 
+                detail=f"Версия датасетов {version} уже существует. Перезапись запрещена."
+            )
+        
+        # Проверяем, что это zip файл
+        if not zip_file.filename.endswith('.zip'):
+            raise HTTPException(status_code=400, detail="Файл должен быть .zip архивом")
+        
+        # Сохраняем временный файл
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_file:
+            shutil.copyfileobj(zip_file.file, tmp_file)
+            tmp_path = tmp_file.name
+        
+        try:
+            from app.model_version_manager import upload_dataset_version
+            success = upload_dataset_version(version, tmp_path, description)
+            
+            if success:
+                return {
+                    "status": "success",
+                    "message": f"Версия датасетов {version} успешно загружена",
+                    "version": version
+                }
+            else:
+                raise HTTPException(status_code=500, detail="Не удалось загрузить версию датасетов")
+        finally:
+            # Удаляем временный файл
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка загрузки версии датасетов: {e}")
+
+@admin_router.post("/models/train", dependencies=[Depends(validate_admin_api_key)])
+async def train_missing_models():
+    """Train models for all dataset versions that don't have models (non-blocking)"""
+    try:
+        from app.model_version_manager import train_missing_models
+        
+        # Запускаем обучение в отдельном потоке, чтобы не блокировать сервис
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(model_training_executor, train_missing_models)
+        
+        return {
+            "status": "success" if result["success"] else "partial",
+            "message": f"Обучено моделей: {len(result['trained'])}, ошибок: {len(result['failed'])}",
+            "trained": result["trained"],
+            "failed": result["failed"],
+            "errors": result["errors"]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка обучения моделей: {e}")
+
+@admin_router.post("/models/switch", dependencies=[Depends(validate_admin_api_key)])
+async def switch_model_version(version: str = Form(..., description="Version to switch to (e.g., v1.0)")):
+    """Switch current model version (non-blocking)"""
+    try:
+        from app.model_version_manager import switch_model_version, validate_model_version
+        
+        # Валидируем версию (быстрая операция, можно синхронно)
+        is_valid, error = validate_model_version(version)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=error)
+        
+        # Меняем версию в отдельном потоке (хотя это быстро, но для консистентности)
+        loop = asyncio.get_event_loop()
+        success = await loop.run_in_executor(model_training_executor, switch_model_version, version)
+        
+        if success:
+            return {
+                "status": "success",
+                "message": f"Версия модели изменена на {version}",
+                "current_version": version
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Не удалось изменить версию модели")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка смены версии модели: {e}")

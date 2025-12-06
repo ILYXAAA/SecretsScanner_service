@@ -181,6 +181,20 @@ async def lifespan(app: FastAPI):
                 logger.critical("Не удалось подключиться к 'Redis' после всех попыток")
                 raise
     
+    # Check and train missing models before starting workers (async, non-blocking)
+    try:
+        from app.model_version_manager import check_and_train_missing_models
+        logger.info("Проверка версий датасетов и обучение недостающих моделей...")
+        # Запускаем в фоне, чтобы не блокировать старт сервиса
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(validation_pool, check_and_train_missing_models)
+        logger.info("Проверка моделей запущена в фоне")
+    except Exception as e:
+        logger.error(f"Ошибка при запуске проверки моделей: {e}")
+        import traceback
+        traceback.print_exc()
+        # Не останавливаем запуск сервиса, но логируем ошибку
+    
     # Import admin functions
     from app.admin_routes import start_worker_process, worker_processes, set_worker_processes
     

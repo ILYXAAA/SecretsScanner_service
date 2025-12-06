@@ -10,6 +10,10 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 import pickle
 import logging
 from logging.handlers import RotatingFileHandler
+from app.model_version_manager import (
+    get_current_model_version, ensure_datasets_extracted,
+    get_dataset_description, save_model_info
+)
 
 # Setup logging function
 def setup_logging(console_mode=False):
@@ -29,31 +33,54 @@ def setup_logging(console_mode=False):
 logger = setup_logging(console_mode=False)
 
 class SecretClassifier:
-    _instance = None
+    _instances = {}  # Храним экземпляры по версиям
     model = None
     vectorizer = None
+    version = None
 
-    def __init__(self, console_mode=False):
+    def __init__(self, version=None, console_mode=False):
+        # Определяем версию
+        if version is None:
+            version = get_current_model_version()
+            if version is None:
+                raise ValueError("Не удалось определить версию модели")
+        
+        self.version = version
+        
+        # Убеждаемся, что датасеты распакованы
+        if not console_mode:
+            ensure_datasets_extracted(version)
+        
         # Определяем пути в зависимости от режима запуска
         if console_mode:
-            self.MODEL_PATH = "../Model/secret_detector_model.pkl"
-            self.VECTORIZER_PATH = "../Model/vectorizer.pkl"
-            self.SECRETS_DATASET = "../Datasets/Dataset_Secrets.txt"
-            self.NOT_SECRETS_DATASET = "../Datasets/Dataset_NonSecrets.txt"
+            self.MODEL_PATH = f"../Model/{version}/secret_detector_model.pkl"
+            self.VECTORIZER_PATH = f"../Model/{version}/vectorizer.pkl"
+            self.SECRETS_DATASET = f"../Datasets/{version}/Dataset_Secrets.txt"
+            self.NOT_SECRETS_DATASET = f"../Datasets/{version}/Dataset_NonSecrets.txt"
             self.TEST_CSV_PATH = "../TestModel/TestModel.csv"
         else:
-            self.MODEL_PATH = "Model/secret_detector_model.pkl"
-            self.VECTORIZER_PATH = "Model/vectorizer.pkl"
-            self.SECRETS_DATASET = "Datasets/Dataset_Secrets.txt"
-            self.NOT_SECRETS_DATASET = "Datasets/Dataset_NonSecrets.txt"
+            self.MODEL_PATH = f"Model/{version}/secret_detector_model.pkl"
+            self.VECTORIZER_PATH = f"Model/{version}/vectorizer.pkl"
+            self.SECRETS_DATASET = f"Datasets/{version}/Dataset_Secrets.txt"
+            self.NOT_SECRETS_DATASET = f"Datasets/{version}/Dataset_NonSecrets.txt"
             self.TEST_CSV_PATH = "TestModel/TestModel.csv"
 
-    def __new__(cls, console_mode=False):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance.__init__(console_mode)
-            cls._instance._load_or_train_model()
-        return cls._instance
+    def __new__(cls, version=None, console_mode=False):
+        # Определяем версию для ключа
+        if version is None:
+            version = get_current_model_version()
+            if version is None:
+                raise ValueError("Не удалось определить версию модели")
+        
+        # Используем версию как ключ для Singleton
+        instance_key = f"{version}_{console_mode}"
+        
+        if instance_key not in cls._instances:
+            cls._instances[instance_key] = super().__new__(cls)
+            cls._instances[instance_key].__init__(version, console_mode)
+            cls._instances[instance_key]._load_or_train_model()
+        
+        return cls._instances[instance_key]
 
     def _load_or_train_model(self):
         start_time = time.time()
@@ -75,6 +102,9 @@ class SecretClassifier:
         with open(self.NOT_SECRETS_DATASET, "r", encoding="utf-8") as f:
             non_secrets = f.read().splitlines()
 
+        secrets_size = len(secrets)
+        non_secrets_size = len(non_secrets)
+
         X = secrets + non_secrets
         y = [1] * len(secrets) + [0] * len(non_secrets)
 
@@ -95,6 +125,10 @@ class SecretClassifier:
         
         joblib.dump(self.model, self.MODEL_PATH)
         joblib.dump(self.vectorizer, self.VECTORIZER_PATH)
+        
+        # Сохраняем информацию о модели
+        description = get_dataset_description(self.version)
+        save_model_info(self.version, secrets_size, non_secrets_size, description)
 
     def retrain_model(self):
         """Переобучение модели с нуля"""
@@ -576,15 +610,29 @@ class SecretClassifier:
         return secrets
 
 # Глобальная функция для использования в FastAPI
-def get_model_instance():
-    """Получить экземпляр модели (thread-safe)"""
-    return SecretClassifier(console_mode=False)
+def get_model_instance(version=None):
+    """Получить экземпляр модели (thread-safe)
+    
+    Args:
+        version: Версия модели. Если None, используется текущая версия из current_version.txt
+    """
+    return SecretClassifier(version=version, console_mode=False)
 
 # Функция для использования в отдельных процессах
 def filter_secrets_in_process(ProjectName, secrets_list: list[dict], worker_instance=None) -> list[dict]:
-    """Функция для фильтрации секретов в отдельном процессе"""
+    """Функция для фильтрации секретов в отдельном процессе
+    
+    Использует версию модели из worker_instance, чтобы каждый воркер работал
+    с той версией модели, с которой он запустился.
+    """
     try:
-        classifier = SecretClassifier(console_mode=False)
+        # Получаем версию модели из воркера, если он передан
+        model_version = None
+        if worker_instance and hasattr(worker_instance, 'model_version') and worker_instance.model_version:
+            model_version = worker_instance.model_version
+        
+        # Используем версию модели воркера, а не актуальную из файла
+        classifier = get_model_instance(version=model_version)
         return classifier.filter_secrets(ProjectName, secrets_list, worker_instance)
     except Exception as e:
         logger.error(f"Ошибка в процессе классификации: {e}")
@@ -705,7 +753,11 @@ def console_manager():
     print("🚀 Загрузка модели...")
     
     try:
-        classifier = SecretClassifier(console_mode=True)
+        from app.model_version_manager import get_current_model_version
+        version = get_current_model_version()
+        if version:
+            print(f"📦 Используется версия модели: {version}")
+        classifier = SecretClassifier(version=version, console_mode=True)
         print("✅ Модель успешно загружена!")
     except Exception as e:
         print(f"❌ Ошибка при загрузке модели: {e}")

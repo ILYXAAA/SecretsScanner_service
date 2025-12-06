@@ -365,7 +365,7 @@ def validate_environment():
         return False
 
     required_files = ["app/main.py", "app/model_loader.py", "app/models.py", "app/redis_client.py", "app/worker.py", "app/repo_utils.py",
-                      "app/scanner.py", "app/secure_save.py", "Datasets/Dataset_NonSecrets.txt", "Datasets/Dataset_Secrets.txt",
+                      "app/scanner.py", "app/secure_save.py",
                       "Settings/excluded_extensions.yml", "Settings/excluded_files.yml", "Settings/false-positive.yml",
                       "Settings/rules.yml", "Settings/login.dat", "Settings/password.dat", "Settings/pat_token.dat"]
     
@@ -374,7 +374,20 @@ def validate_environment():
         if not os.path.exists(file):
             logging.error(f"Required файл не найден: {file}")
             validation_result = False
-
+    
+    # Проверка наличия датасетов (новая структура с версиями)
+    try:
+        from app.model_version_manager import get_all_dataset_versions
+        dataset_versions = get_all_dataset_versions()
+        if not dataset_versions:
+            logging.error("Не найдено ни одной версии датасетов в папке Datasets/")
+            validation_result = False
+        else:
+            logging.info(f"Найдено версий датасетов: {len(dataset_versions)}")
+    except Exception as e:
+        logging.error(f"Ошибка при проверке датасетов: {e}")
+        validation_result = False
+    
     return validation_result
 
 def check_dependencies():
