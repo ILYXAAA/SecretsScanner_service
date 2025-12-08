@@ -11,15 +11,6 @@ import json
 import logging
 from logging.handlers import RotatingFileHandler
 
-# Setup logging to file
-# logging.basicConfig(
-#     level=logging.INFO,
-#     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-#     handlers=[
-#         RotatingFileHandler('secrets_scanner_service.log', maxBytes=10*1024*1024, backupCount=5, encoding='utf-8'),
-#         logging.StreamHandler()  # Также выводить в консоль
-#     ]
-# )
 logger = logging.getLogger("scanner")
 
 RULES_FILE = "Settings/rules.yml"
@@ -361,12 +352,12 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=50, max_line_l
     try:
         with open(file_path, "r", encoding="UTF-8", errors="ignore") as f:
             lines = f.readlines()
-
+        relative_path = "/" + os.path.relpath(file_path, target_dir).replace("\\", "/")
         for line_num, line in enumerate(lines, start=1):
             if len(line) > max_line_length:
                 hashed_line = hashlib.md5(line.encode('utf-8')).hexdigest()
                 results.append({
-                    "path": file_path.replace(target_dir, "").replace("\\", "/"),
+                    "path": relative_path,
                     "line": line_num,
                     "secret": f"СТРОКА НЕ СКАНИРОВАЛАСЬ т.к. её длина более {max_line_length} символов. Проверьте строку вручную. Хеш строки: {hashed_line}",
                     "context": f"Строка {line_num} содержит большое количество символов. Длина: {len(line)}.",
@@ -382,7 +373,7 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=50, max_line_l
                     context = line.strip()
                     if not check_false_positive(secret, context, FALSE_POSITIVE_RULES):
                         all_secrets.append({
-                            "path": file_path.replace(target_dir, "").replace("\\", "/"),
+                            "path": relative_path,
                             "line": line_num,
                             "secret": secret,
                             "context": context,
@@ -396,7 +387,7 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=50, max_line_l
             all_secrets_string = "\n".join([s["secret"] for s in all_secrets])
             hashed_secrets = hashlib.md5(all_secrets_string.encode('utf-8')).hexdigest()
             results = [{
-                "path": file_path.replace(target_dir, "").replace("\\", "/"),
+                "path": relative_path,
                 "line": 0,
                 "secret": f"ФАЙЛ НЕ ВЫВЕДЕН ПОЛНОСТЬЮ т.к. найдено более {max_secrets} секретов. Проверьте файл вручную. Хеш всех секретов: {hashed_secrets}",
                 "context": f"Найдено секретов: {secrets_found}\nСписок найденных секретов ниже:\n{all_secrets_string}",
