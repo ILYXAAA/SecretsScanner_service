@@ -620,6 +620,7 @@ async def local_scan(
         queue_limit = max_workers * 3
         
         if queue_stats["pending"] >= queue_limit:
+            logger.warning(f"['{ProjectName}'] Очередь переполнена ({queue_stats['pending']} задач). Попробуйте позже.")
             return JSONResponse(status_code=429, content={
                 "status": "queue_full",
                 "message": f"Очередь переполнена ({queue_stats['pending']} задач). Попробуйте позже."
@@ -627,7 +628,7 @@ async def local_scan(
 
         # Validate file type and size
         if not zip_file.filename.endswith('.zip'):
-            logger.error(f"Неверный тип файла: '{zip_file.filename}'")
+            logger.error(f"['{ProjectName}'] Неверный тип файла: '{zip_file.filename}'")
             return JSONResponse(status_code=400, content={
                 "status": "validation_failed",
                 "message": "Файл должен быть в формате ZIP"
@@ -640,6 +641,7 @@ async def local_scan(
         zip_file.file.seek(0)  # Reset position
         
         if file_size > max_file_size:
+            logger.warning(f"['{ProjectName}'] Файл слишком большой ({file_size // (1024*1024)}MB). Максимум: {max_file_size // (1024*1024)}MB")
             return JSONResponse(status_code=400, content={
                 "status": "validation_failed",
                 "message": f"Файл слишком большой ({file_size // (1024*1024)}MB). Максимум: {max_file_size // (1024*1024)}MB"

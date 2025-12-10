@@ -607,6 +607,16 @@ class RedisClient:
                 worker.status = new_status
                 worker.last_heartbeat = current_time
                 worker.current_task_id = current_task_id
+                
+                -- Обновляем last_progress_update только если прогресс действительно изменился
+                local old_progress = worker.current_task_progress
+                if task_progress ~= nil and task_progress ~= old_progress then
+                    worker.last_progress_update = current_time
+                elseif worker.last_progress_update == nil and task_progress ~= nil then
+                    -- Первое обновление прогресса
+                    worker.last_progress_update = current_time
+                end
+                
                 worker.current_task_progress = task_progress
                 worker.current_task_detail = task_detail
                 if model_version then
@@ -884,7 +894,37 @@ class RedisClient:
                                 continue
                             
                             # Problem 2: Task assigned to inactive worker
-                            if worker_id not in active_workers:
+                            # Проверяем напрямую данные воркера из Redis для более надежной проверки
+                            worker_is_active = False
+                            if worker_id in active_workers:
+                                worker_is_active = True
+                            else:
+                                # Дополнительная проверка: получаем данные воркера напрямую
+                                worker_json = self.redis_client.hget("workers:all", worker_id)
+                                if worker_json:
+                                    try:
+                                        worker = json.loads(worker_json)
+                                        worker_heartbeat = worker.get("last_heartbeat", 0)
+                                        worker_task_id = worker.get("current_task_id")
+                                        last_progress_update = worker.get("last_progress_update", 0)
+                                        
+                                        # Воркер активен, если:
+                                        # 1. Heartbeat свежий (в пределах 15 минут) И он работает над этой задачей
+                                        # 2. ИЛИ прогресс обновлялся недавно (в пределах 20 минут) И он работает над этой задачей
+                                        # 3. ИЛИ задача имеет прогресс > 0 (значит воркер работал)
+                                        heartbeat_fresh = (current_time - worker_heartbeat) < 900  # 15 минут
+                                        progress_recent = last_progress_update > 0 and (current_time - last_progress_update) < 1200  # 20 минут
+                                        task_has_progress = task.get("progress", 0) > 0
+                                        
+                                        if worker_task_id == task_id:
+                                            if heartbeat_fresh or progress_recent or task_has_progress:
+                                                worker_is_active = True
+                                                # Добавляем в active_workers для последующих проверок
+                                                active_workers.add(worker_id)
+                                    except:
+                                        pass
+                            
+                            if not worker_is_active:
                                 logger.warning(f"Обнаружена задача '{task_id}' назначенная неактивному воркеру '{worker_id}'")
                                 self.update_task_status(
                                     task_id, 
@@ -1017,29 +1057,56 @@ class RedisClient:
             return 0
 
     def cleanup_dead_workers(self) -> int:
-        """Remove dead workers"""
+        """Remove dead workers and stuck workers"""
         try:
             workers_data = self.redis_client.hgetall("workers:all")
             current_time = time.time()
             cleaned_count = 0
+            stuck_timeout = 1200  # 20 минут в секундах
             
             for worker_id, worker_json in workers_data.items():
                 try:
                     worker = json.loads(worker_json)
                     last_heartbeat = worker.get("last_heartbeat", 0)
+                    current_task_id = worker.get("current_task_id")
+                    status = worker.get("status", "")
+                    last_progress_update = worker.get("last_progress_update", 0)
                     
-                    # Remove workers with no heartbeat for 5 minutes
-                    if (current_time - last_heartbeat) > 300:
+                    # Проверка 1: Нет heartbeat более 10 минут
+                    if (current_time - last_heartbeat) > 600:
+                        logger.warning(f"Воркер {worker_id} отписан: нет heartbeat {int((current_time - last_heartbeat) / 60)} минут")
                         self.unregister_worker(worker_id)
                         cleaned_count += 1
+                        continue
+                    
+                    # Проверка 2: Воркер обрабатывает задачу, но прогресс не меняется более 20 минут
+                    if current_task_id and status in ["scanning", "ml_validation", "downloading", "unpacking"]:
+                        if last_progress_update > 0:
+                            time_since_progress = current_time - last_progress_update
+                            if time_since_progress > stuck_timeout:
+                                logger.warning(f"Воркер {worker_id} завис на задаче {current_task_id}: прогресс не меняется {int(time_since_progress / 60)} минут")
+                                # Помечаем задачу как failed
+                                try:
+                                    self.update_task_status(
+                                        current_task_id,
+                                        "failed",
+                                        error=f"Worker stuck - no progress for {int(time_since_progress / 60)} minutes",
+                                        worker_id=None
+                                    )
+                                except Exception as task_error:
+                                    logger.error(f"Ошибка при пометке задачи {current_task_id} как failed: {task_error}")
+                                # Отписываем воркера
+                                self.unregister_worker(worker_id)
+                                cleaned_count += 1
                         
-                except:
+                except Exception as worker_error:
                     # Invalid worker data, remove it
+                    logger.warning(f"Ошибка обработки воркера {worker_id}: {worker_error}")
                     self.unregister_worker(worker_id)
                     cleaned_count += 1
             
             if cleaned_count > 0:
-                logger.info(f"Очищено '{cleaned_count}' мертвых воркеров")
+                logger.info(f"Очищено {cleaned_count} мертвых/зависших воркеров")
             
             return cleaned_count
             

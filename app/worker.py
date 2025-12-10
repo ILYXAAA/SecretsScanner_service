@@ -665,6 +665,21 @@ class Worker:
         except Exception as e:
             self.logger.error(f"Ошибка обновления статистики воркера: {e}")
 
+    async def heartbeat_background_task(self):
+        """Фоновая задача для периодической отправки heartbeat независимо от основной работы"""
+        heartbeat_interval = 30  # Отправляем heartbeat каждые 30 секунд
+        while self.running:
+            try:
+                await asyncio.sleep(heartbeat_interval)
+                if self.running:
+                    # Отправляем heartbeat с текущим статусом
+                    self.send_heartbeat(force=True)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.error(f"Ошибка в heartbeat background task: {e}")
+                await asyncio.sleep(10)  # При ошибке ждем меньше перед повтором
+
     async def run(self):
         """Main worker loop"""
         startup_start = time.time()
@@ -694,62 +709,80 @@ class Worker:
             startup_time = time.time() - startup_start
             self.logger.info(f"Воркер '{self.worker_id}' готов к работе (запуск за {startup_time:.2f}с)")
             
+            # Запускаем фоновую задачу для heartbeat
+            heartbeat_task = None
+            try:
+                heartbeat_task = asyncio.create_task(self.heartbeat_background_task())
+            except Exception as e:
+                self.logger.error(f"Ошибка создания heartbeat task: {e}")
+            
             # Main work loop
             consecutive_errors = 0
             max_consecutive_errors = 5
             
-            while self.running:
-                try:
-                    # Send periodic heartbeat (respects pause state)
-                    self.send_heartbeat()
-                    
-                    # Check for commands
-                    self.check_commands()
-                    if not self.running:
-                        break
-                    
-                    # Skip getting tasks if paused
-                    if self.paused:
-                        await asyncio.sleep(2)
-                        continue
-                    
-                    # Get task from Redis
-                    task_data = self.redis_client.pop_task(self.worker_id, timeout=2)
-                    
-                    if task_data:
-                        # Reset error counter on successful task retrieval
-                        consecutive_errors = 0
-                        await self.process_task(task_data)
-                    else:
-                        # No tasks available, short sleep
-                        await asyncio.sleep(1)
-                    
-                    if not self.running:
-                        break
-                    
-                except KeyboardInterrupt:
-                    self.logger.info("Получен 'Ctrl+C', завершаю работу")
-                    break
-                    
-                except Exception as e:
-                    consecutive_errors += 1
-                    self.logger.error(f"Ошибка в основном цикле worker (#{consecutive_errors}): {e}")
-                    
-                    if consecutive_errors >= max_consecutive_errors:
-                        self.logger.error(f"Слишком много ошибок подряд ({consecutive_errors}), завершаю работу")
-                        break
-                    
-                    # Progressive backoff on errors
-                    await asyncio.sleep(min(consecutive_errors * 2, 30))
-                    
-                    # Try to send error heartbeat
+            try:
+                while self.running:
                     try:
-                        self.send_heartbeat("error", force=True)
-                    except:
-                        pass
+                        # Send periodic heartbeat (respects pause state)
+                        self.send_heartbeat()
                         
-                    if not self.running:
+                        # Check for commands
+                        self.check_commands()
+                        if not self.running:
+                            break
+                        
+                        # Skip getting tasks if paused
+                        if self.paused:
+                            await asyncio.sleep(2)
+                            continue
+                        
+                        # Get task from Redis
+                        task_data = self.redis_client.pop_task(self.worker_id, timeout=2)
+                        
+                        if task_data:
+                            # Reset error counter on successful task retrieval
+                            consecutive_errors = 0
+                            await self.process_task(task_data)
+                        else:
+                            # No tasks available, short sleep
+                            await asyncio.sleep(1)
+                        
+                        if not self.running:
+                            break
+                        
+                    except KeyboardInterrupt:
+                        self.logger.info("Получен 'Ctrl+C', завершаю работу")
                         break
+                        
+                    except Exception as e:
+                        consecutive_errors += 1
+                        self.logger.error(f"Ошибка в основном цикле worker (#{consecutive_errors}): {e}")
+                        
+                        if consecutive_errors >= max_consecutive_errors:
+                            self.logger.error(f"Слишком много ошибок подряд ({consecutive_errors}), завершаю работу")
+                            break
+                        
+                        # Progressive backoff on errors
+                        await asyncio.sleep(min(consecutive_errors * 2, 30))
+                        
+                        # Try to send error heartbeat
+                        try:
+                            self.send_heartbeat("error", force=True)
+                        except:
+                            pass
+                            
+                        if not self.running:
+                            break
+            finally:
+                # Останавливаем фоновую задачу heartbeat
+                if heartbeat_task:
+                    heartbeat_task.cancel()
+                    try:
+                        await heartbeat_task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as e:
+                        self.logger.warning(f"Ошибка при остановке heartbeat task: {e}")
             
         except Exception as e:
             self.logger.error(f"Критическая ошибка worker: {e}")
