@@ -123,6 +123,15 @@ def background_maintenance():
                     # Verify queue consistency
                     redis_client._verify_queue_consistency()
                     
+                    # Очистка кэша репозиториев (старше 7 дней)
+                    try:
+                        from app.repo_cache import cleanup_old_entries
+                        cleaned_cache = cleanup_old_entries()
+                        if cleaned_cache > 0:
+                            logger.info(f"Repo cache cleanup: удалено '{cleaned_cache}' записей")
+                    except Exception as cache_err:
+                        logger.warning(f"Ошибка очистки кэша репозиториев: {cache_err}")
+                    
                     if cleaned_tasks > 0:
                         logger.info(f"Periodic cleanup: '{cleaned_tasks}' старых задач")
                     

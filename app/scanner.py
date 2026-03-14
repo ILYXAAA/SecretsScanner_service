@@ -343,11 +343,27 @@ def is_extension_excluded(file_ext, EXCLUDED_EXTENSIONS):
     #         return True
     # return False
 
-async def _analyze_file(file_path, rules, target_dir, max_secrets=50, max_line_length=15_000, FALSE_POSITIVE_RULES=[]):
+# Расширенный контекст для DevZone: лимит символов (10 строк до + 10 после могут быть большими)
+MAX_EXTENDED_CONTEXT_CHARS = 5000
+
+def _build_context(lines, line_num_1based, context_lines_before, context_lines_after, max_context_chars):
+    """Собирает контекст из строк до и после указанной. line_num_1based — номер строки с секретом (1-based)."""
+    idx = line_num_1based - 1
+    start = max(0, idx - context_lines_before)
+    end = min(len(lines), idx + 1 + context_lines_after)
+    context_parts = [lines[i].rstrip("\n\r") for i in range(start, end)]
+    context_str = "\n".join(context_parts)
+    if len(context_str) > max_context_chars:
+        context_str = context_str[: max_context_chars] + "\n... (обрезано)"
+    return context_str
+
+
+async def _analyze_file(file_path, rules, target_dir, max_secrets=50, max_line_length=15_000, FALSE_POSITIVE_RULES=[], context_lines_before=0, context_lines_after=0, max_context_chars=MAX_EXTENDED_CONTEXT_CHARS):
     """Асинхронная функция для анализа файла с ограничениями"""
     results = []
     all_secrets = []
     secrets_found = 0
+    use_extended_context = context_lines_before > 0 or context_lines_after > 0
 
     try:
         with open(file_path, "r", encoding="UTF-8", errors="ignore") as f:
@@ -370,7 +386,10 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=50, max_line_l
                 match = re.search(rule["pattern"], line)
                 if match:
                     secret = match.group(0)
-                    context = line.strip()
+                    if use_extended_context:
+                        context = _build_context(lines, line_num, context_lines_before, context_lines_after, max_context_chars)
+                    else:
+                        context = line.strip()
                     if not check_false_positive(secret, context, FALSE_POSITIVE_RULES):
                         all_secrets.append({
                             "path": relative_path,
@@ -403,11 +422,11 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=50, max_line_l
     return results
 
 
-async def search_secrets(file_path, rules, target_dir, max_secrets=50, max_line_length=15_000, FALSE_POSITIVE_RULES=[]):
+async def search_secrets(file_path, rules, target_dir, max_secrets=50, max_line_length=15_000, FALSE_POSITIVE_RULES=[], context_lines_before=0, context_lines_after=0):
     """Простая обертка для анализа файла"""
-    return await _analyze_file(file_path, rules, target_dir, max_secrets, max_line_length, FALSE_POSITIVE_RULES)
+    return await _analyze_file(file_path, rules, target_dir, max_secrets, max_line_length, FALSE_POSITIVE_RULES, context_lines_before=context_lines_before, context_lines_after=context_lines_after)
 
-async def scan_directory_without_callback(projectName, target_dir, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES, skipped_files_from_extraction=None, worker_instance=None):
+async def scan_directory_without_callback(projectName, target_dir, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES, skipped_files_from_extraction=None, worker_instance=None, context_lines_before=0, context_lines_after=0):
     """Сканирование директории без callback (для использования в процессах)"""
     scan_start = time.time()
     all_results = []
@@ -463,7 +482,7 @@ async def scan_directory_without_callback(projectName, target_dir, rules, EXCLUD
         batch = file_list[i:i + batch_size]
         
         batch_tasks = [
-            search_secrets(file_path, rules, target_dir, max_secrets=50, max_line_length=15_000, FALSE_POSITIVE_RULES=FALSE_POSITIVE_RULES)
+            search_secrets(file_path, rules, target_dir, max_secrets=50, max_line_length=15_000, FALSE_POSITIVE_RULES=FALSE_POSITIVE_RULES, context_lines_before=context_lines_before, context_lines_after=context_lines_after)
             for file_path in batch
         ]
         
@@ -497,7 +516,7 @@ async def scan_directory_without_callback(projectName, target_dir, rules, EXCLUD
     
     return all_results, files_excluded, all_files_count, skipped_files_str, detected_languages, detected_frameworks
 
-async def scan_repo_without_callback(request, repo_path, projectName, skipped_at_extraction=0, skipped_files_from_extraction=None, worker_instance=None):
+async def scan_repo_without_callback(request, repo_path, projectName, skipped_at_extraction=0, skipped_files_from_extraction=None, worker_instance=None, context_lines_before=0, context_lines_after=0):
     """Сканирование без callback для использования в отдельных процессах"""
     scan_start = time.time()
     
@@ -510,7 +529,7 @@ async def scan_repo_without_callback(request, repo_path, projectName, skipped_at
         skipped_files_from_extraction = []
     
     results, files_excluded, all_files_count, skipped_files, detected_languages, detected_frameworks = await scan_directory_without_callback(
-        projectName, repo_path, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES, skipped_files_from_extraction, worker_instance
+        projectName, repo_path, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES, skipped_files_from_extraction, worker_instance, context_lines_before=context_lines_before, context_lines_after=context_lines_after
     )
     
     # Добавляем файлы, пропущенные при распаковке

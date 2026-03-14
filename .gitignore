@@ -5,6 +5,7 @@ __pycache__/
 
 Model/*
 tmp/
+repo_cache/
 Settings/login.dat
 Settings/password.dat
 Settings/pat_token.dat

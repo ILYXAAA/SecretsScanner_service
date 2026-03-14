@@ -19,6 +19,15 @@ if project_root not in sys.path:
 
 from app.redis_client import get_redis_client
 from app.repo_utils import download_repo, delete_dir
+from app.repo_cache import (
+    get_short_commit,
+    get_cache_path,
+    get_lock_path,
+    is_cache_valid,
+    touch_cache_used,
+    acquire_lock,
+    move_extracted_to_cache,
+)
 from app.scanner import scan_repo_without_callback
 from app.model_loader import filter_secrets_in_process
 import aiohttp
@@ -221,7 +230,7 @@ class Worker:
             self.logger.warning(f"Ошибка удаления временной папки '{temp_dir}': {e}")
 
     async def download_repository(self, task: dict) -> tuple[str, str, str]:
-        """Download repository for regular scan. Returns (repo_path, temp_dir, status)"""
+        """Download repository for regular scan. Returns (repo_path, temp_dir, status). Uses repo cache (7 days)."""
         temp_dir = None
         try:
             self.send_heartbeat("downloading", force=True)
@@ -230,6 +239,15 @@ class Worker:
             commit = task["commit"]
             ref_type = task.get("ref_type")
             ref = task.get("ref")
+            
+            short_commit = get_short_commit(task)
+            cache_path = get_cache_path(short_commit)
+            
+            # Проверка кэша: если есть актуальная запись — используем её
+            if is_cache_valid(cache_path):
+                touch_cache_used(cache_path)
+                self.logger.info(f"Кэш репозитория (commit {short_commit}), пропуск скачивания ('{task['task_id']}')")
+                return cache_path, None, "Success"
             
             is_devzone = "devzone.local" in repo_url.lower()
             if is_devzone:
@@ -271,12 +289,28 @@ class Worker:
                 self.logger.info(f"Обновляю commit в задаче: '{commit[:8]}..' -> '{scanned_commit[:8]}..' ('{task['task_id']}')")
                 self.redis_client.update_task_status(
                     task["task_id"],
-                    task["status"],  # Оставляем текущий статус
+                    task["status"],
                     commit=scanned_commit
                 )
-                # Обновляем локальную копию задачи
                 task["commit"] = scanned_commit
             
+            # Кладём в кэш под блокировкой (другой воркер мог уже заполнить)
+            try:
+                with acquire_lock(get_lock_path(short_commit)):
+                    if is_cache_valid(cache_path):
+                        self.cleanup_temp_directory(temp_dir)
+                        touch_cache_used(cache_path)
+                        self.logger.info(f"Кэш репозитория (commit {short_commit}) заполнен другим воркером ('{task['task_id']}')")
+                        return cache_path, None, "Success"
+                    if move_extracted_to_cache(extracted_path, cache_path):
+                        self.cleanup_temp_directory(temp_dir)
+                        temp_dir = None
+                        self.logger.info(f"Репозиторий сохранён в кэш '{cache_path}' ('{task['task_id']}')")
+                        return cache_path, None, "Success"
+            except TimeoutError as e:
+                self.logger.warning(f"Таймаут блокировки кэша: {e}, используем временную папку")
+            
+            # Без кэша: возвращаем путь к распакованному репо (temp_dir будет очищен в finally)
             self.logger.info(f"Репозиторий скачан успешно в '{extracted_path}' ('{task['task_id']}')")
             return extracted_path, temp_dir, "Success"
             
@@ -390,11 +424,17 @@ class Worker:
             original_data = task["original_data"]
             request = ScanRequest(**original_data["request"])
             
+            # Расширенный контекст для DevZone: 10 строк до и после секрета
+            is_devzone = "devzone.local" in (task.get("repo_url") or "").lower()
+            context_before = 10 if is_devzone else 0
+            context_after = 10 if is_devzone else 0
+
             # Perform scanning with timeout and worker instance for heartbeat
             try:
                 scan_result = await asyncio.wait_for(
                     scan_repo_without_callback(
-                        request, repo_path, project_name, 0, [], worker_instance=self
+                        request, repo_path, project_name, 0, [], worker_instance=self,
+                        context_lines_before=context_before, context_lines_after=context_after
                     ),
                     timeout=900  # 15 minutes max for scanning
                 )
