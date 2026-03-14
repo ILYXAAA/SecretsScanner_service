@@ -426,8 +426,8 @@ class Worker:
             
             # Расширенный контекст для DevZone: 5 строк до и после секрета
             is_devzone = "devzone.local" in (task.get("repo_url") or "").lower()
-            CONTEXT_LINES_BEFORE = 5
-            CONTEXT_LINES_AFTER = 5
+            CONTEXT_LINES_BEFORE = 7
+            CONTEXT_LINES_AFTER = 7
             context_before = CONTEXT_LINES_BEFORE if is_devzone else 0
             context_after = CONTEXT_LINES_AFTER if is_devzone else 0
 
