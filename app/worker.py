@@ -424,10 +424,10 @@ class Worker:
             original_data = task["original_data"]
             request = ScanRequest(**original_data["request"])
             
-            # Расширенный контекст для DevZone: 10 строк до и после секрета
+            # Расширенный контекст для DevZone: 5 строк до и после секрета
             is_devzone = "devzone.local" in (task.get("repo_url") or "").lower()
-            context_before = 10 if is_devzone else 0
-            context_after = 10 if is_devzone else 0
+            context_before = 5 if is_devzone else 0
+            context_after = 5 if is_devzone else 0
 
             # Perform scanning with timeout and worker instance for heartbeat
             try:

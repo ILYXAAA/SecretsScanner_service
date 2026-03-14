@@ -343,7 +343,7 @@ def is_extension_excluded(file_ext, EXCLUDED_EXTENSIONS):
     #         return True
     # return False
 
-# Расширенный контекст для DevZone: лимит символов (10 строк до + 10 после могут быть большими)
+# Расширенный контекст для DevZone: лимит символов (5 строк до + 5 после могут быть большими)
 MAX_EXTENDED_CONTEXT_CHARS = 5000
 
 def _build_context(lines, line_num_1based, context_lines_before, context_lines_after, max_context_chars):
