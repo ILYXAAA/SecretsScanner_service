@@ -28,6 +28,6 @@ excluded_files:
 - Gemfile.lock
 - mix.exs
 - mix.lock
-- .elixir_ls/rebar.lock
+- rebar.lock
 - nuget.config
 - gemfile.lock
