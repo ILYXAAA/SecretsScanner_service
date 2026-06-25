@@ -345,6 +345,8 @@ def is_extension_excluded(file_ext, EXCLUDED_EXTENSIONS):
 
 # Расширенный контекст для DevZone: лимит символов (5 строк до + 5 после могут быть большими)
 MAX_EXTENDED_CONTEXT_CHARS = 5000
+# Окно false-positive: симметрично другому сканеру (context_lines_count=2 → 2 до + текущая + 2 после)
+FALSE_POSITIVE_CONTEXT_LINES = 2
 
 def _build_context(lines, line_num_1based, context_lines_before, context_lines_after, max_context_chars):
     """Собирает контекст из строк до и после указанной. line_num_1based — номер строки с секретом (1-based)."""
@@ -386,11 +388,16 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=50, max_line_l
                 match = re.search(rule["pattern"], line)
                 if match:
                     secret = match.group(0)
+                    fp_context = _build_context(
+                        lines, line_num,
+                        FALSE_POSITIVE_CONTEXT_LINES, FALSE_POSITIVE_CONTEXT_LINES,
+                        max_context_chars,
+                    )
                     if use_extended_context:
                         context = _build_context(lines, line_num, context_lines_before, context_lines_after, max_context_chars)
                     else:
                         context = line.strip()
-                    if not check_false_positive(secret, context, FALSE_POSITIVE_RULES):
+                    if not check_false_positive(secret, fp_context, FALSE_POSITIVE_RULES):
                         all_secrets.append({
                             "path": relative_path,
                             "line": line_num,
