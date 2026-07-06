@@ -211,11 +211,6 @@ class ForbiddenRepositoryAnalyzer:
             for filename in files:
                 if filename.startswith("."):
                     continue
-                if (
-                    filename.lower().endswith(".zip")
-                    and os.path.normpath(root) == os.path.normpath(directory)
-                ):
-                    continue
 
                 file_path = os.path.join(root, filename)
                 relative_path = os.path.relpath(file_path, directory)
