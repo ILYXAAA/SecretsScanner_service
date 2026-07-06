@@ -34,6 +34,7 @@ model_info.json
 *.pkl
 Datasets/*
 !Datasets/v1.0/
+Settings/languages_repo_config.yml
 
 # C extensions
 *.so
