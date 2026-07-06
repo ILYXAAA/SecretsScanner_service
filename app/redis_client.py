@@ -432,7 +432,7 @@ class RedisClient:
                     return 'invalid_status'
                 end
                 
-                if task.task_type == 'local_scan' then
+                if task.task_type == 'local_scan' or task.task_type == 'local_forbidden_check' then
                     return 'local_scan_no_retry'
                 end
                 

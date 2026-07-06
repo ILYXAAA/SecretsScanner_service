@@ -1,0 +1,143 @@
+forbidden_languages:
+  - pas
+  - perl
+
+non_blocking_static_extensions:
+  - .png
+  - .jpeg
+  - .jpg
+  - .gif
+  - .bmp
+  - .ico
+  - .svg
+  - .webp
+  - .doc
+  - .docx
+  - .pdf
+  - .xls
+  - .xlsx
+  - .ppt
+  - .pptx
+  - .mp3
+  - .mp4
+  - .avi
+  - .mov
+  - .wav
+  - .flac
+  - .mkv
+  - .woff
+  - .woff2
+  - .ttf
+  - .eot
+  - .otf
+
+binary_extensions:
+  - .exe
+  - .dll
+  - .so
+  - .dylib
+  - .bin
+  - .dat
+  - .class
+  - .o
+  - .obj
+  - .pyc
+  - .pyo
+
+archive_extensions:
+  - .zip
+  - .tar
+  - .gz
+  - .bz2
+  - .7z
+  - .rar
+  - .tgz
+  - .tar.gz
+  - .tar.bz2
+
+config_extensions:
+  - .json
+  - .yaml
+  - .yml
+  - .toml
+  - .ini
+  - .conf
+  - .config
+  - .cfg
+  - .xml
+  - .properties
+
+config_filenames:
+  - Dockerfile
+  - docker-compose.yml
+  - .env
+  - requirements.txt
+  - package.json
+  - Makefile
+  - .gitignore
+  - .dockerignore
+  - README.md
+
+language_extensions:
+  python:
+    - .py
+    - .pyw
+    - .pyx
+  javascript:
+    - .js
+    - .mjs
+    - .jsx
+  typescript:
+    - .ts
+    - .tsx
+  java:
+    - .java
+  c:
+    - .c
+    - .h
+  cpp:
+    - .cpp
+    - .cc
+    - .cxx
+    - .hpp
+    - .hxx
+  csharp:
+    - .cs
+  go:
+    - .go
+  rust:
+    - .rs
+  ruby:
+    - .rb
+  php:
+    - .php
+  swift:
+    - .swift
+  kotlin:
+    - .kt
+    - .kts
+  scala:
+    - .scala
+  r:
+    - .r
+    - .R
+  shell:
+    - .sh
+    - .bash
+    - .zsh
+  sql:
+    - .sql
+  html:
+    - .html
+    - .htm
+  css:
+    - .css
+    - .scss
+    - .sass
+    - .less
+  markdown:
+    - .md
+    - .markdown
+
+entropy_threshold: 7
+max_file_size_mb: 100

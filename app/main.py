@@ -69,13 +69,13 @@ def background_maintenance():
             if current_time - last_timeout_check >= timeout_check_interval:
                 try:
                     # Get processing tasks and check for timeouts
-                    processing_tasks = redis_client.get_tasks(["processing", "downloading", "unpacking", "scanning", "ml_validation"])
+                    processing_tasks = redis_client.get_tasks(["processing", "downloading", "unpacking", "scanning", "ml_validation", "analyzing"])
                     timeout_count = 0
 
                     for task in processing_tasks:
                         # ВАЖНО: проверяем что задача действительно в процессе
                         current_status = task.get("status")
-                        if current_status not in ["processing", "downloading", "unpacking", "scanning", "ml_validation"]:
+                        if current_status not in ["processing", "downloading", "unpacking", "scanning", "ml_validation", "analyzing"]:
                             continue  # Пропускаем уже завершенные задачи
                             
                         timeout_at = task.get("timeout_at", 0)
@@ -310,6 +310,7 @@ RULES_PATH = "Settings/rules.yml"
 EXCLUDED_EXTENSIONS_PATH = "Settings/excluded_extensions.yml"
 EXCLUDED_FILES_PATH = "Settings/excluded_files.yml"
 FP_FILE_PATH = "Settings/false-positive.yml"
+LANGUAGES_REPO_CONFIG_PATH = "Settings/languages_repo_config.yml"
 
 # === Health Check ===
 @app.get("/health", dependencies=[Depends(validate_api_key)])
@@ -750,6 +751,190 @@ async def local_scan(
 
 
 
+@app.post("/forbidden_check", dependencies=[Depends(validate_api_key)])
+async def forbidden_check(request: ScanRequest):
+    try:
+        redis_client = get_redis_client()
+        queue_stats = redis_client.get_queue_stats()
+
+        max_workers = int(os.getenv("MAX_WORKERS", "10"))
+        queue_limit = max_workers * 3
+
+        if queue_stats["pending"] >= queue_limit:
+            return JSONResponse(status_code=429, content={
+                "status": "queue_full",
+                "RefType": request.RefType,
+                "Ref": request.Ref,
+                "message": f"Очередь переполнена ({queue_stats['pending']} задач). Попробуйте позже."
+            })
+
+        try:
+            exists, commit, message = await validate_ref_async(request.RepoUrl, request.RefType, request.Ref)
+        except asyncio.TimeoutError:
+            return JSONResponse(status_code=408, content={
+                "status": "validation_timeout",
+                "RefType": request.RefType,
+                "Ref": request.Ref,
+                "message": "Таймаут валидации репозитория"
+            })
+
+        if not exists:
+            if message:
+                return JSONResponse(status_code=400, content={
+                    "status": "validation_failed",
+                    "RefType": request.RefType,
+                    "Ref": request.Ref,
+                    "message": message
+                })
+            raise ValueError(f"{request.RefType} '{request.Ref}' не найден в репозитории {request.RepoUrl}")
+
+        if "devzone.local" in request.RepoUrl.lower():
+            commit_for_task = commit
+            logger.info(f"DevZone ref resolved '{request.RefType}':'{commit}' для '{request.ProjectName}'")
+        else:
+            commit_for_task = commit
+            logger.info(f"Commit resolved '{commit[0:8]}'.. для '{request.ProjectName}'")
+
+        task_data = {
+            "type": "forbidden_check",
+            "request": request.dict(),
+            "commit": commit_for_task
+        }
+
+        if redis_client.push_task(task_data, priority=1):
+            return JSONResponse(
+                content={
+                    "status": "accepted",
+                    "RefType": request.RefType,
+                    "Ref": request.Ref,
+                    "commit": commit,
+                    "queue_position": queue_stats["pending"] + 1,
+                    "message": "Проверка запрещённых языков добавлена в очередь"
+                },
+                status_code=200
+            )
+        raise HTTPException(status_code=500, detail="Ошибка добавления задачи в очередь")
+
+    except ValueError as e:
+        logger.error(f"Запрос forbidden_check не принят - validation_failed: {e}")
+        return JSONResponse(status_code=400, content={
+            "status": "validation_failed",
+            "RefType": request.RefType,
+            "Ref": request.Ref,
+            "message": str(e)
+        })
+    except Exception as e:
+        logger.error(f"Неожиданная ошибка forbidden_check: {e}")
+        return JSONResponse(status_code=500, content={
+            "status": "error",
+            "RefType": request.RefType,
+            "Ref": request.Ref,
+            "message": "Внутренняя ошибка сервера"
+        })
+
+
+@app.post("/local_forbidden_check", dependencies=[Depends(validate_api_key)])
+async def local_forbidden_check(
+    ProjectName: str = Form(...),
+    RepoUrl: str = Form(...),
+    CallbackUrl: str = Form(...),
+    RefType: str = Form(...),
+    Ref: str = Form(...),
+    zip_file: UploadFile = File(...)
+):
+    """Проверка запрещённых языков по загруженному ZIP (без retry)"""
+    try:
+        logger.info(f"['{ProjectName}'] Получен запрос на локальную проверку запрещённых языков")
+
+        redis_client = get_redis_client()
+        queue_stats = redis_client.get_queue_stats()
+
+        max_workers = int(os.getenv("MAX_WORKERS", "10"))
+        queue_limit = max_workers * 3
+
+        if queue_stats["pending"] >= queue_limit:
+            return JSONResponse(status_code=429, content={
+                "status": "queue_full",
+                "message": f"Очередь переполнена ({queue_stats['pending']} задач). Попробуйте позже."
+            })
+
+        if not zip_file.filename.endswith('.zip'):
+            return JSONResponse(status_code=400, content={
+                "status": "validation_failed",
+                "message": "Файл должен быть в формате ZIP"
+            })
+
+        max_file_size = 2 * 1024 * 1024 * 1024
+        zip_file.file.seek(0, 2)
+        file_size = zip_file.file.tell()
+        zip_file.file.seek(0)
+
+        if file_size > max_file_size:
+            return JSONResponse(status_code=400, content={
+                "status": "validation_failed",
+                "message": f"Файл слишком большой ({file_size // (1024*1024)}MB). Максимум: {max_file_size // (1024*1024)}MB"
+            })
+
+        temp_dir = os.getenv("TEMP_DIR", "/tmp")
+        upload_dir = os.path.join(temp_dir, "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+
+        task_id = f"task-{int(time.time() * 1000)}-{hash(ProjectName) % 10000:04d}"
+        zip_path = os.path.join(upload_dir, f"{task_id}.zip")
+
+        try:
+            with open(zip_path, "wb") as temp_zip:
+                zip_file.file.seek(0)
+                while True:
+                    chunk = zip_file.file.read(8192)
+                    if not chunk:
+                        break
+                    temp_zip.write(chunk)
+        except Exception as e:
+            try:
+                if os.path.exists(zip_path):
+                    os.remove(zip_path)
+            except OSError:
+                pass
+            return JSONResponse(status_code=500, content={
+                "status": "error",
+                "message": f"Ошибка сохранения файла: {e}"
+            })
+
+        request_dict = {
+            "ProjectName": ProjectName,
+            "RepoUrl": RepoUrl,
+            "RefType": RefType,
+            "Ref": Ref,
+            "CallbackUrl": CallbackUrl
+        }
+
+        task_data = {
+            "type": "local_forbidden_check",
+            "request": request_dict,
+            "zip_file_path": zip_path,
+            "file_size": file_size
+        }
+
+        if redis_client.push_task(task_data, priority=1):
+            return JSONResponse(
+                content={
+                    "status": "accepted",
+                    "message": "Локальная проверка запрещённых языков добавлена в очередь",
+                    "queue_position": queue_stats["pending"] + 1
+                },
+                status_code=200
+            )
+        raise HTTPException(status_code=500, detail="Ошибка добавления задачи в очередь")
+
+    except Exception as e:
+        logger.error(f"Ошибка local_forbidden_check: {e}")
+        return JSONResponse(status_code=500, content={
+            "status": "error",
+            "message": "Внутренняя ошибка сервера"
+        })
+
+
 @app.get("/task_status", dependencies=[Depends(validate_api_key)])
 async def get_task_status_by_callback(callback_url: str = Query(..., description="Callback URL задачи")):
     """Получить статус и прогресс задачи по callback URL"""
@@ -786,6 +971,7 @@ async def get_task_status_by_callback(callback_url: str = Query(..., description
             "downloading": "Загрузка репозитория",
             "unpacking": "Распаковка архива", 
             "scanning": "Сканирование файлов",
+            "analyzing": "Анализ языков и расширений",
             "ml_validation": "ML проверка результатов",
             "completed": "Завершено",
             "failed": "Ошибка"
@@ -817,7 +1003,7 @@ async def get_task_status_by_callback(callback_url: str = Query(..., description
         elif task_status == "failed":
             response_data["error"] = matching_task.get("error", "Неизвестная ошибка")
         
-        elif task_status in ["unpacking", "scanning", "ml_validation"]:
+        elif task_status in ["unpacking", "scanning", "analyzing", "ml_validation"]:
             # Для активных задач с прогрессом
             if progress > 0:
                 response_data["progress_formatted"] = f"{status_description} ({progress}%)"
@@ -914,6 +1100,40 @@ def validate_yaml_structure(content: str, file_type: str) -> tuple[bool, str]:
             false_positive = data['false_positive']
             if not isinstance(false_positive, list):
                 return False, f"Значение 'false_positive' должно быть списком, получен {type(false_positive).__name__}"
+
+        elif file_type == "languages_repo_config":
+            if not isinstance(data, dict):
+                return False, "Файл languages_repo_config.yml должен содержать объект (dict)"
+
+            list_fields = [
+                "forbidden_languages",
+                "non_blocking_static_extensions",
+                "binary_extensions",
+                "archive_extensions",
+                "config_extensions",
+                "config_filenames",
+            ]
+            for field in list_fields:
+                if field not in data:
+                    return False, f"Отсутствует обязательный ключ '{field}'"
+                if not isinstance(data[field], list):
+                    return False, f"Ключ '{field}' должен быть списком"
+
+            if "language_extensions" not in data:
+                return False, "Отсутствует обязательный ключ 'language_extensions'"
+            if not isinstance(data["language_extensions"], dict):
+                return False, "Ключ 'language_extensions' должен быть объектом"
+            for lang, extensions in data["language_extensions"].items():
+                if not isinstance(lang, str):
+                    return False, "Ключи language_extensions должны быть строками"
+                if not isinstance(extensions, list):
+                    return False, f"language_extensions['{lang}'] должен быть списком"
+
+            for field in ("entropy_threshold", "max_file_size_mb"):
+                if field not in data:
+                    return False, f"Отсутствует обязательный ключ '{field}'"
+                if not isinstance(data[field], (int, float)):
+                    return False, f"Ключ '{field}' должен быть числом"
                 
         return True, "Структура YAML корректна"
         
@@ -1228,5 +1448,79 @@ async def update_fp_rules_file(content: str):
     return {
         "message": f"Файл {FP_FILE_PATH} успешно обновлен",
         "filename": FP_FILE_PATH,
+        "size": size
+    }
+
+###########################
+# languages_repo_config.yml
+###########################
+@app.get("/languages-repo-config-info", dependencies=[Depends(validate_api_key)])
+async def languages_repo_config_info():
+    if os.path.exists(LANGUAGES_REPO_CONFIG_PATH):
+        stat = os.stat(LANGUAGES_REPO_CONFIG_PATH)
+        return {
+            "exists": True,
+            "size": stat.st_size,
+            "modified": stat.st_mtime,
+            "path": os.path.abspath(LANGUAGES_REPO_CONFIG_PATH)
+        }
+    return {
+        "exists": False,
+        "size": 0,
+        "modified": 0.0,
+        "path": os.path.abspath(LANGUAGES_REPO_CONFIG_PATH)
+    }
+
+@app.get("/get-languages-repo-config", dependencies=[Depends(validate_api_key)])
+async def get_languages_repo_config():
+    try:
+        if not os.path.exists(LANGUAGES_REPO_CONFIG_PATH):
+            return JSONResponse(status_code=404, content={"status": "failed", "message": "Файл не найден"})
+
+        async with aiofiles.open(LANGUAGES_REPO_CONFIG_PATH, mode='r', encoding='utf-8') as f:
+            content = await f.read()
+
+        return {"status": "success", "languages_repo_config": content}
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "status": "failed",
+            "message": f"Ошибка при чтении файла: {str(e)}"
+        })
+
+@app.post("/update-languages-repo-config", dependencies=[Depends(validate_api_key)])
+async def update_languages_repo_config(data: RulesContent):
+    try:
+        info = await update_languages_repo_config_file(data.content)
+        return {"status": "success", **info}
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={
+            "status": "validation_failed",
+            "message": str(e),
+            "filename": LANGUAGES_REPO_CONFIG_PATH,
+            "size": 0
+        })
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "status": "failed",
+            "message": f"Произошла ошибка: {e}",
+            "filename": LANGUAGES_REPO_CONFIG_PATH,
+            "size": 0
+        })
+
+async def update_languages_repo_config_file(content: str):
+    is_valid, error_msg = validate_yaml_structure(content, "languages_repo_config")
+    if not is_valid:
+        raise ValueError(f"Некорректная структура languages_repo_config.yml: {error_msg}")
+
+    normalized_content = content.replace('\r\n', '\n').replace('\r', '\n')
+
+    async with aiofiles.open(LANGUAGES_REPO_CONFIG_PATH, 'w', encoding='utf-8') as out_file:
+        await out_file.write(normalized_content)
+
+    size = os.path.getsize(LANGUAGES_REPO_CONFIG_PATH)
+    return {
+        "message": f"Файл {LANGUAGES_REPO_CONFIG_PATH} успешно обновлен",
+        "filename": LANGUAGES_REPO_CONFIG_PATH,
         "size": size
     }

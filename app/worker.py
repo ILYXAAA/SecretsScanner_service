@@ -29,6 +29,7 @@ from app.repo_cache import (
     move_extracted_to_cache,
 )
 from app.scanner import scan_repo_without_callback
+from app.forbidden_check import analyze_repository, DEFAULT_CONFIG_PATH
 from app.model_loader import filter_secrets_in_process
 import aiohttp
 import json
@@ -485,6 +486,42 @@ class Worker:
             self.logger.error(f"Ошибка сканирования: {e} ('{task['task_id']}')")
             raise
 
+    async def analyze_forbidden_check(self, task: dict, repo_path: str) -> dict:
+        """Analyze repository for forbidden languages and extensions"""
+        try:
+            self.redis_client.update_task_status(task["task_id"], "analyzing")
+            self.send_heartbeat("analyzing", force=True)
+
+            project_name = task["project_name"]
+            self.logger.info(f"Начинаю forbidden check '{project_name}' ('{task['task_id']}')")
+            start_time = time.time()
+
+            if self.check_task_timeout(task):
+                raise Exception("Task timeout during forbidden check")
+
+            try:
+                results = await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(
+                        None, analyze_repository, repo_path, DEFAULT_CONFIG_PATH
+                    ),
+                    timeout=900
+                )
+            except asyncio.TimeoutError:
+                raise Exception("Forbidden check timeout exceeded (15 minutes)")
+
+            total_time = time.time() - start_time
+            violations_count = results["summary"]["violations_count"]
+            self.logger.info(
+                f"Forbidden check завершён за {total_time:.2f}с. "
+                f"Нарушений: '{violations_count}' ('{task['task_id']}')"
+            )
+
+            return results
+
+        except Exception as e:
+            self.logger.error(f"Ошибка forbidden check: {e} ('{task['task_id']}')")
+            raise
+
     async def send_callback(self, task: dict, payload: dict):
         """Send callback with retry logic"""
         max_retries = 3
@@ -493,7 +530,13 @@ class Worker:
         for attempt in range(max_retries):
             try:
                 project_name = payload.get("ProjectName", "unknown")
-                results_count = len(payload.get("Results", []))
+                results = payload.get("Results", [])
+                if isinstance(results, dict):
+                    results_count = results.get("summary", {}).get(
+                        "violations_count", len(results.get("violations", []))
+                    )
+                else:
+                    results_count = len(results)
                 callback_url = task["callback_url"]
                 
                 # Serialize and compress payload
@@ -573,33 +616,72 @@ class Worker:
             
             # Get repo path based on task type
             if task_type == "scan":
-                # Regular repository scan
                 repo_path, temp_dir, status = await self.download_repository(task)
-                
+
             elif task_type == "local_scan":
-                # Local ZIP scan - store ZIP path for cleanup if needed
                 original_data = task["original_data"]
                 uploaded_zip_path = original_data.get("zip_file_path")
-                
                 repo_path, temp_dir, status = await self.extract_zip_file(task)
-                
+
+            elif task_type == "forbidden_check":
+                repo_path, temp_dir, status = await self.download_repository(task)
+
+            elif task_type == "local_forbidden_check":
+                original_data = task["original_data"]
+                uploaded_zip_path = original_data.get("zip_file_path")
+                repo_path, temp_dir, status = await self.extract_zip_file(task)
+
             else:
                 raise ValueError(f"Unknown task type: {task_type}")
-            
+
             if not repo_path:
                 raise Exception(f"Failed to prepare repository: {status}")
-            
-            # Scan repository
+
             if self.check_task_timeout(task):
                 raise Exception("Task timeout after preparation")
-            
+
+            original_data = task["original_data"]
+            request_data = original_data["request"]
+
+            if task_type in ("forbidden_check", "local_forbidden_check"):
+                results = await self.analyze_forbidden_check(task, repo_path)
+
+                if self.check_task_timeout(task):
+                    raise Exception("Task timeout after forbidden check")
+
+                payload = {
+                    "Status": "completed",
+                    "Message": "Forbidden check completed",
+                    "TaskType": task_type,
+                    "ProjectName": project_name,
+                    "ProjectRepoUrl": request_data["RepoUrl"],
+                    "RepoCommit": task.get("commit", request_data.get("Ref", "local")),
+                    "Passed": results["summary"]["passed"],
+                    "Results": results,
+                }
+
+                await self.send_callback(task, payload)
+
+                execution_time = time.time() - execution_start_time
+                self.redis_client.update_task_status(
+                    task_id,
+                    "completed",
+                    results_count=results["summary"]["violations_count"],
+                    execution_time=execution_time
+                )
+                self.update_worker_stats(completed=1)
+                self.logger.info(
+                    f"Задача '{task_id}' успешно завершена за {execution_time:.2f}с ('{project_name}')"
+                )
+                return
+
+            # Secret scan flow
             results, scan_data = await self.scan_repository(task, repo_path)
             
             if self.check_task_timeout(task):
                 raise Exception("Task timeout after scanning")
             
             # Prepare callback payload
-            original_data = task["original_data"]
             request_data = original_data["request"]
             
             payload = {
