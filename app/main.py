@@ -1105,8 +1105,27 @@ def validate_yaml_structure(content: str, file_type: str) -> tuple[bool, str]:
             if not isinstance(data, dict):
                 return False, "Файл languages_repo_config.yml должен содержать объект (dict)"
 
+            if "forbidden_languages" not in data:
+                return False, "Отсутствует обязательный ключ 'forbidden_languages'"
+
+            forbidden = data["forbidden_languages"]
+            if isinstance(forbidden, list):
+                for i, item in enumerate(forbidden):
+                    if not isinstance(item, str):
+                        return False, f"forbidden_languages[{i}] должен быть строкой"
+            elif isinstance(forbidden, dict):
+                for lang, exts in forbidden.items():
+                    if not isinstance(lang, str):
+                        return False, "Ключи forbidden_languages должны быть строками"
+                    if not isinstance(exts, list):
+                        return False, f"forbidden_languages['{lang}'] должен быть списком расширений"
+                    for j, ext in enumerate(exts):
+                        if not isinstance(ext, str):
+                            return False, f"forbidden_languages['{lang}'][{j}] должен быть строкой"
+            else:
+                return False, "forbidden_languages должен быть списком имён языков или объектом язык → расширения"
+
             list_fields = [
-                "forbidden_languages",
                 "non_blocking_static_extensions",
                 "binary_extensions",
                 "archive_extensions",
@@ -1120,7 +1139,7 @@ def validate_yaml_structure(content: str, file_type: str) -> tuple[bool, str]:
                     return False, f"Ключ '{field}' должен быть списком"
 
             if "language_extensions" not in data:
-                return False, "Отсутствует обязательный ключ 'language_extensions'"
+                return False, "Отсутствует обязательный ключ 'language_extensions' (может быть пустым: {})"
             if not isinstance(data["language_extensions"], dict):
                 return False, "Ключ 'language_extensions' должен быть объектом"
             for lang, extensions in data["language_extensions"].items():

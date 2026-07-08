@@ -11,9 +11,54 @@ import yaml
 DEFAULT_CONFIG_PATH = "Settings/languages_repo_config.yml"
 
 
+def _normalize_extension(ext: str) -> str:
+    ext = ext.strip().lower()
+    if not ext:
+        return ext
+    return ext if ext.startswith(".") else f".{ext}"
+
+
+def normalize_languages_repo_config(config: dict) -> dict:
+    """
+    Поддерживает два формата forbidden_languages:
+    - список имён: [pas, perl] — языки берутся из language_extensions
+    - словарь язык → расширения: {1C: [.bsl, .os], Abap: [.abap]}
+    """
+    normalized = dict(config)
+    language_extensions = {
+        lang: [_normalize_extension(e) for e in exts if isinstance(e, str)]
+        for lang, exts in (normalized.get("language_extensions") or {}).items()
+        if isinstance(exts, list)
+    }
+
+    forbidden = normalized.get("forbidden_languages", [])
+    forbidden_set: set[str] = set()
+
+    if isinstance(forbidden, dict):
+        for lang, exts in forbidden.items():
+            lang_key = str(lang)
+            forbidden_set.add(lang_key)
+            if not isinstance(exts, list):
+                continue
+            from_forbidden = [_normalize_extension(e) for e in exts if isinstance(e, str) and e.strip()]
+            existing = language_extensions.get(lang_key, [])
+            language_extensions[lang_key] = list(dict.fromkeys(existing + from_forbidden))
+    elif isinstance(forbidden, list):
+        forbidden_set = {str(x) for x in forbidden if x is not None}
+    else:
+        forbidden_set = set()
+
+    normalized["language_extensions"] = language_extensions
+    normalized["_forbidden_language_set"] = forbidden_set
+    return normalized
+
+
 def load_languages_repo_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
     with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        raw = yaml.safe_load(f)
+    if not isinstance(raw, dict):
+        raise ValueError("languages_repo_config.yml должен содержать YAML-объект")
+    return normalize_languages_repo_config(raw)
 
 
 class ForbiddenRepositoryAnalyzer:
@@ -142,7 +187,7 @@ class ForbiddenRepositoryAnalyzer:
     ) -> list[str]:
         reasons = []
 
-        if language in self.config["forbidden_languages"] and category != "static":
+        if language in self.config.get("_forbidden_language_set", set()) and category != "static":
             reasons.append(f"forbidden_language: {language}")
 
         if self._is_forbidden_extension(ext):
