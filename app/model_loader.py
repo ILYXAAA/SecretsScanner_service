@@ -32,6 +32,27 @@ def setup_logging(console_mode=False):
 # Default logger for import mode
 logger = setup_logging(console_mode=False)
 
+ML_SKIP_TYPES = frozenset({"Too Many Secrets", "Too Long Line"})
+
+
+def _should_skip_ml_validation(item: dict) -> bool:
+    if item.get("Type") in ML_SKIP_TYPES:
+        return True
+    secret = item.get("secret", "")
+    return (
+        "СТРОКА НЕ СКАНИРОВАЛАСЬ т.к. её длина" in secret
+        or "ФАЙЛ НЕ ВЫВЕДЕН ПОЛНОСТЬЮ т.к." in secret
+    )
+
+
+def _apply_non_ml_finding_metadata(item: dict) -> None:
+    """Фиксированные метаданные для находок, которые не проходят ML-валидацию."""
+    if "confidence" not in item or item.get("confidence") is None:
+        item["confidence"] = 0.50
+    if not item.get("severity"):
+        item["severity"] = "Potential"
+
+
 class SecretClassifier:
     _instances = {}  # Храним экземпляры по версиям
     model = None
@@ -471,53 +492,76 @@ class SecretClassifier:
         classification_start = time.time()
         """
         Классифицирует каждый элемент словаря в списке secrets по полям "secret" и "context".
+        Находки Too Many Secrets и Too Long Line ML-валидацию не проходят.
         """
         if not secrets:
             return secrets
-            
-        # Извлекаем строки для предсказания
-        secret_texts = [item.get("secret", "") for item in secrets]
-        context_texts = [item.get("context", "") for item in secrets]
-        
-        if not secret_texts:
+
+        ml_items = []
+        skipped_count = 0
+
+        for item in secrets:
+            if _should_skip_ml_validation(item):
+                _apply_non_ml_finding_metadata(item)
+                skipped_count += 1
+            else:
+                ml_items.append(item)
+
+        if skipped_count:
+            logger.info(
+                f"[{ProjectName}] Пропущено ML-валидации для {skipped_count} служебных находок "
+                f"(Too Many Secrets / Too Long Line)"
+            )
+
+        if not ml_items:
+            classification_time = time.time() - classification_start
+            logger.info(
+                f"[{ProjectName}] ML-классификация не требуется "
+                f"({len(secrets)} элементов, время: {classification_time:.2f}с)"
+            )
+            if worker_instance:
+                worker_instance.send_heartbeat(
+                    "ml_validation", force=True, progress=100,
+                    progress_detail=f"Обработано {len(secrets)} результатов (без ML)",
+                )
             return secrets
 
+        secret_texts = [item.get("secret", "") for item in ml_items]
+        context_texts = [item.get("context", "") for item in ml_items]
+
         try:
-            total_items = len(secrets)
+            total_items = len(ml_items)
             logger.info(f"[{ProjectName}] Начинаю ML классификацию {total_items} элементов")
-            
-            # Предсказания для секретов
+
             X_secret_vec = self.vectorizer.transform(secret_texts)
             preds_secret = self.model.predict(X_secret_vec)
             probs_secret = self.model.predict_proba(X_secret_vec)
-            
-            # Отправляем heartbeat после обработки секретов
+
             if worker_instance:
-                progress = 30  # Секреты обработаны - 30% готово
-                worker_instance.send_heartbeat_if_needed("ml_validation", 10, progress, f"Обработано {len(secret_texts)} секретов")
-            
-            # Предсказания для контекстов (если они есть)
+                progress = 30
+                worker_instance.send_heartbeat_if_needed(
+                    "ml_validation", 10, progress, f"Обработано {len(secret_texts)} секретов",
+                )
+
             context_predictions = []
             context_probabilities = []
-            
-            # Фильтруем непустые контексты
             non_empty_contexts = [ctx if ctx and ctx.strip() else None for ctx in context_texts]
-            
+
             if any(ctx is not None for ctx in non_empty_contexts):
-                # Создаем список только непустых контекстов для векторизации
                 contexts_to_predict = [ctx for ctx in non_empty_contexts if ctx is not None]
-                
+
                 if contexts_to_predict:
                     X_context_vec = self.vectorizer.transform(contexts_to_predict)
                     context_preds = self.model.predict(X_context_vec)
                     context_probs = self.model.predict_proba(X_context_vec)
-                    
-                    # Отправляем heartbeat после обработки контекстов
+
                     if worker_instance:
-                        progress = 60  # Контексты обработаны - 60% готово
-                        worker_instance.send_heartbeat_if_needed("ml_validation", 10, progress, f"Обработано {len(contexts_to_predict)} контекстов")
-                    
-                    # Создаем полный список предсказаний с None для пустых контекстов
+                        progress = 60
+                        worker_instance.send_heartbeat_if_needed(
+                            "ml_validation", 10, progress,
+                            f"Обработано {len(contexts_to_predict)} контекстов",
+                        )
+
                     context_idx = 0
                     for ctx in non_empty_contexts:
                         if ctx is not None:
@@ -528,85 +572,71 @@ class SecretClassifier:
                             context_predictions.append(None)
                             context_probabilities.append(None)
                 else:
-                    context_predictions = [None] * len(secrets)
-                    context_probabilities = [None] * len(secrets)
+                    context_predictions = [None] * len(ml_items)
+                    context_probabilities = [None] * len(ml_items)
             else:
-                context_predictions = [None] * len(secrets)
-                context_probabilities = [None] * len(secrets)
+                context_predictions = [None] * len(ml_items)
+                context_probabilities = [None] * len(ml_items)
 
-            # Обработка результатов с временной проверкой heartbeat и прогрессом
-            total_secrets = len(secrets)
             processed_secrets = 0
-            
-            for i, (item, pred_secret, proba_secret) in enumerate(zip(secrets, preds_secret, probs_secret)):
-                # Вычисляем прогресс (60% уже готово, оставшиеся 40% за обработку результатов)
-                progress = 60 + int((processed_secrets / total_secrets) * 40) if total_secrets > 0 else 60
-                progress_detail = f"Проанализировано {processed_secrets} из {total_secrets} результатов"
-                
-                # Отправляем heartbeat каждые 10 секунд с прогрессом
+            for ml_i, (item, pred_secret, proba_secret) in enumerate(zip(ml_items, preds_secret, probs_secret)):
+                progress = 60 + int((processed_secrets / total_items) * 40) if total_items > 0 else 60
+                progress_detail = f"Проанализировано {processed_secrets} из {total_items} результатов"
+
                 if worker_instance:
                     worker_instance.send_heartbeat_if_needed("ml_validation", 10, progress, progress_detail)
-                    
-                    # Проверяем timeout задачи
+
                     if hasattr(worker_instance, 'current_task') and worker_instance.current_task:
                         if worker_instance.check_task_timeout(worker_instance.current_task):
                             raise Exception("Task timeout during ML validation")
-                
-                confidence_secret = proba_secret[1]  # вероятность класса 1 (что это секрет)
-                
-                # Получаем предсказание для контекста если оно есть
-                pred_context = context_predictions[i] if i < len(context_predictions) else None
-                proba_context = context_probabilities[i] if i < len(context_probabilities) else None
-                
-                # Сохраняем детали предсказаний
+
+                confidence_secret = proba_secret[1]
+                pred_context = context_predictions[ml_i] if ml_i < len(context_predictions) else None
+                proba_context = context_probabilities[ml_i] if ml_i < len(context_probabilities) else None
+
                 item["secret_confidence"] = round(confidence_secret, 3)
                 item["secret_prediction"] = bool(pred_secret)
-                
+
                 if pred_context is not None and proba_context is not None:
                     confidence_context = proba_context[1]
                     item["context_confidence"] = round(confidence_context, 3)
                     item["context_prediction"] = bool(pred_context)
-                    
-                    # Усредняем confidence
+
                     secret_weight = 1.0
                     context_weight = 0.8
-                    final_confidence = (confidence_secret * secret_weight + confidence_context * context_weight) / (secret_weight + context_weight)
+                    final_confidence = (
+                        confidence_secret * secret_weight + confidence_context * context_weight
+                    ) / (secret_weight + context_weight)
                     item["confidence_averaged"] = True
                 else:
-                    # Используем только confidence секрета
                     final_confidence = confidence_secret
                     item["context_confidence"] = None
                     item["context_prediction"] = None
                     item["confidence_averaged"] = False
-                
-                # Обработка специальных случаев
-                if "СТРОКА НЕ СКАНИРОВАЛАСЬ т.к. её длина" in item["secret"] or "ФАЙЛ НЕ ВЫВЕДЕН ПОЛНОСТЬЮ т.к." in item["secret"]:
-                    item["confidence"] = 0.50
-                    item["severity"] = "Potential"
-                else:
-                    item["confidence"] = round(final_confidence, 2)
-                    
-                    if final_confidence > 0.7:
-                        item["severity"] = "High"
-                    else:
-                        item["severity"] = "Potential"
-                
+
+                item["confidence"] = round(final_confidence, 2)
+                item["severity"] = "High" if final_confidence > 0.7 else "Potential"
+
                 processed_secrets += 1
-            
-            # Финальный прогресс ML-валидации
+
             if worker_instance:
-                worker_instance.send_heartbeat("ml_validation", force=True, progress=100, progress_detail=f"Обработано {total_secrets} секретов")
-                                    
+                worker_instance.send_heartbeat(
+                    "ml_validation", force=True, progress=100,
+                    progress_detail=f"Обработано {total_items} секретов",
+                )
+
         except Exception as e:
             logger.error(f"Ошибка классификации: {e}")
-            # Fallback: mark all as High severity
-            for item in secrets:
+            for item in ml_items:
                 item["confidence"] = 1.00
                 if not item.get("severity"):
                     item["severity"] = "High"
 
         classification_time = time.time() - classification_start
-        logger.info(f"[{ProjectName}] Классификация завершена для {len(secrets)} элементов (время: {classification_time:.2f}с)")
+        logger.info(
+            f"[{ProjectName}] Классификация завершена для {len(secrets)} элементов "
+            f"(ML: {len(ml_items)}, без ML: {skipped_count}, время: {classification_time:.2f}с)"
+        )
         return secrets
 
 # Глобальная функция для использования в FastAPI
