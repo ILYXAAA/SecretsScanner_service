@@ -418,7 +418,15 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=50, max_line_l
                 "secret": f"ФАЙЛ НЕ ВЫВЕДЕН ПОЛНОСТЬЮ т.к. найдено более {max_secrets} секретов. Проверьте файл вручную. Хеш всех секретов: {hashed_secrets}",
                 "context": f"Найдено секретов: {secrets_found}\nСписок найденных секретов ниже:\n{all_secrets_string}",
                 "severity": "High",
-                "Type": "Too Many Secrets"
+                "Type": "Too Many Secrets",
+                "secrets_details": [
+                    {
+                        "line": s["line"],
+                        "secret": s["secret"],
+                        "Type": s["Type"],
+                    }
+                    for s in all_secrets
+                ],
             }]
         else:
             results.extend(all_secrets)
