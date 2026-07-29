@@ -4,7 +4,6 @@ import yaml
 import re
 from app.model_loader import get_model_instance
 import aiohttp
-import hashlib
 import time
 import fnmatch
 import json
@@ -345,6 +344,7 @@ def is_extension_excluded(file_ext, EXCLUDED_EXTENSIONS):
 
 # Расширенный контекст для DevZone: лимит символов (5 строк до + 5 после могут быть большими)
 MAX_EXTENDED_CONTEXT_CHARS = 5000
+MAX_LINE_LENGTH = 10000
 # Окно false-positive: симметрично другому сканеру (context_lines_count=2 → 2 до + текущая + 2 после)
 FALSE_POSITIVE_CONTEXT_LINES = 2
 
@@ -360,11 +360,9 @@ def _build_context(lines, line_num_1based, context_lines_before, context_lines_a
     return context_str
 
 
-async def _analyze_file(file_path, rules, target_dir, max_secrets=50, max_line_length=15_000, FALSE_POSITIVE_RULES=[], context_lines_before=0, context_lines_after=0, max_context_chars=MAX_EXTENDED_CONTEXT_CHARS):
+async def _analyze_file(file_path, rules, target_dir, max_line_length=MAX_LINE_LENGTH, FALSE_POSITIVE_RULES=[], context_lines_before=0, context_lines_after=0, max_context_chars=MAX_EXTENDED_CONTEXT_CHARS):
     """Асинхронная функция для анализа файла с ограничениями"""
     results = []
-    all_secrets = []
-    secrets_found = 0
     use_extended_context = context_lines_before > 0 or context_lines_after > 0
 
     try:
@@ -373,15 +371,6 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=50, max_line_l
         relative_path = "/" + os.path.relpath(file_path, target_dir).replace("\\", "/")
         for line_num, line in enumerate(lines, start=1):
             if len(line) > max_line_length:
-                hashed_line = hashlib.md5(line.encode('utf-8')).hexdigest()
-                results.append({
-                    "path": relative_path,
-                    "line": line_num,
-                    "secret": f"СТРОКА НЕ СКАНИРОВАЛАСЬ т.к. её длина более {max_line_length} символов. Проверьте строку вручную. Хеш строки: {hashed_line}",
-                    "context": f"Строка {line_num} содержит большое количество символов. Длина: {len(line)}.",
-                    "severity": "Potential",
-                    "Type": "Too Long Line"
-                })
                 continue
 
             for rule in rules:
@@ -398,7 +387,7 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=50, max_line_l
                     else:
                         context = line.strip()
                     if not check_false_positive(secret, fp_context, FALSE_POSITIVE_RULES):
-                        all_secrets.append({
+                        results.append({
                             "path": relative_path,
                             "line": line_num,
                             "secret": secret,
@@ -407,29 +396,6 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=50, max_line_l
                             "confidence": 1.0,
                             "Type": rule.get("message", "Unknown")
                         })
-                        secrets_found += 1
-
-        if secrets_found > max_secrets:
-            all_secrets_string = "\n".join([s["secret"] for s in all_secrets])
-            hashed_secrets = hashlib.md5(all_secrets_string.encode('utf-8')).hexdigest()
-            results = [{
-                "path": relative_path,
-                "line": 0,
-                "secret": f"ФАЙЛ НЕ ВЫВЕДЕН ПОЛНОСТЬЮ т.к. найдено более {max_secrets} секретов. Проверьте файл вручную. Хеш всех секретов: {hashed_secrets}",
-                "context": f"Найдено секретов: {secrets_found}\nСписок найденных секретов ниже:\n{all_secrets_string}",
-                "severity": "High",
-                "Type": "Too Many Secrets",
-                "secrets_details": [
-                    {
-                        "line": s["line"],
-                        "secret": s["secret"],
-                        "Type": s["Type"],
-                    }
-                    for s in all_secrets
-                ],
-            }]
-        else:
-            results.extend(all_secrets)
 
     except Exception as error:
         logger.error(f"Error: {str(error)} — ошибка при обработке '{file_path}'")
@@ -437,9 +403,9 @@ async def _analyze_file(file_path, rules, target_dir, max_secrets=50, max_line_l
     return results
 
 
-async def search_secrets(file_path, rules, target_dir, max_secrets=50, max_line_length=15_000, FALSE_POSITIVE_RULES=[], context_lines_before=0, context_lines_after=0):
+async def search_secrets(file_path, rules, target_dir, max_line_length=MAX_LINE_LENGTH, FALSE_POSITIVE_RULES=[], context_lines_before=0, context_lines_after=0):
     """Простая обертка для анализа файла"""
-    return await _analyze_file(file_path, rules, target_dir, max_secrets, max_line_length, FALSE_POSITIVE_RULES, context_lines_before=context_lines_before, context_lines_after=context_lines_after)
+    return await _analyze_file(file_path, rules, target_dir, max_line_length, FALSE_POSITIVE_RULES, context_lines_before=context_lines_before, context_lines_after=context_lines_after)
 
 async def scan_directory_without_callback(projectName, target_dir, rules, EXCLUDED_FILES, EXCLUDED_EXTENSIONS, FALSE_POSITIVE_RULES, skipped_files_from_extraction=None, worker_instance=None, context_lines_before=0, context_lines_after=0):
     """Сканирование директории без callback (для использования в процессах)"""
@@ -497,7 +463,7 @@ async def scan_directory_without_callback(projectName, target_dir, rules, EXCLUD
         batch = file_list[i:i + batch_size]
         
         batch_tasks = [
-            search_secrets(file_path, rules, target_dir, max_secrets=50, max_line_length=15_000, FALSE_POSITIVE_RULES=FALSE_POSITIVE_RULES, context_lines_before=context_lines_before, context_lines_after=context_lines_after)
+            search_secrets(file_path, rules, target_dir, FALSE_POSITIVE_RULES=FALSE_POSITIVE_RULES, context_lines_before=context_lines_before, context_lines_after=context_lines_after)
             for file_path in batch
         ]
         

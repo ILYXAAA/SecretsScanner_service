@@ -32,26 +32,6 @@ def setup_logging(console_mode=False):
 # Default logger for import mode
 logger = setup_logging(console_mode=False)
 
-ML_SKIP_TYPES = frozenset({"Too Many Secrets", "Too Long Line"})
-
-
-def _should_skip_ml_validation(item: dict) -> bool:
-    if item.get("Type") in ML_SKIP_TYPES:
-        return True
-    secret = item.get("secret", "")
-    return (
-        "СТРОКА НЕ СКАНИРОВАЛАСЬ т.к. её длина" in secret
-        or "ФАЙЛ НЕ ВЫВЕДЕН ПОЛНОСТЬЮ т.к." in secret
-    )
-
-
-def _apply_non_ml_finding_metadata(item: dict) -> None:
-    """Фиксированные метаданные для находок, которые не проходят ML-валидацию."""
-    if "confidence" not in item or item.get("confidence") is None:
-        item["confidence"] = 0.50
-    if not item.get("severity"):
-        item["severity"] = "Potential"
-
 
 class SecretClassifier:
     _instances = {}  # Храним экземпляры по версиям
@@ -459,17 +439,12 @@ class SecretClassifier:
                 }
             
             processing_time = time.time() - start_time
-            
-            # Определяем severity
-            if "СТРОКА НЕ СКАНИРОВАЛАСЬ т.к. её длина" in text or "ФАЙЛ НЕ ВЫВЕДЕН ПОЛНОСТЬЮ т.к." in text:
-                severity = "Potential"
-                confidence = 0.50
+
+            if confidence > 0.7:
+                severity = "High"
             else:
-                if confidence > 0.7:
-                    severity = "High"
-                else:
-                    severity = "Potential"
-            
+                severity = "Potential"
+
             return {
                 'text': text,
                 'context': context,
@@ -492,45 +467,18 @@ class SecretClassifier:
         classification_start = time.time()
         """
         Классифицирует каждый элемент словаря в списке secrets по полям "secret" и "context".
-        Находки Too Many Secrets и Too Long Line ML-валидацию не проходят.
         """
         if not secrets:
             return secrets
 
-        ml_items = []
-        skipped_count = 0
+        secret_texts = [item.get("secret", "") for item in secrets]
+        context_texts = [item.get("context", "") for item in secrets]
 
-        for item in secrets:
-            if _should_skip_ml_validation(item):
-                _apply_non_ml_finding_metadata(item)
-                skipped_count += 1
-            else:
-                ml_items.append(item)
-
-        if skipped_count:
-            logger.info(
-                f"[{ProjectName}] Пропущено ML-валидации для {skipped_count} служебных находок "
-                f"(Too Many Secrets / Too Long Line)"
-            )
-
-        if not ml_items:
-            classification_time = time.time() - classification_start
-            logger.info(
-                f"[{ProjectName}] ML-классификация не требуется "
-                f"({len(secrets)} элементов, время: {classification_time:.2f}с)"
-            )
-            if worker_instance:
-                worker_instance.send_heartbeat(
-                    "ml_validation", force=True, progress=100,
-                    progress_detail=f"Обработано {len(secrets)} результатов (без ML)",
-                )
+        if not secret_texts:
             return secrets
 
-        secret_texts = [item.get("secret", "") for item in ml_items]
-        context_texts = [item.get("context", "") for item in ml_items]
-
         try:
-            total_items = len(ml_items)
+            total_items = len(secrets)
             logger.info(f"[{ProjectName}] Начинаю ML классификацию {total_items} элементов")
 
             X_secret_vec = self.vectorizer.transform(secret_texts)
@@ -572,14 +520,14 @@ class SecretClassifier:
                             context_predictions.append(None)
                             context_probabilities.append(None)
                 else:
-                    context_predictions = [None] * len(ml_items)
-                    context_probabilities = [None] * len(ml_items)
+                    context_predictions = [None] * len(secrets)
+                    context_probabilities = [None] * len(secrets)
             else:
-                context_predictions = [None] * len(ml_items)
-                context_probabilities = [None] * len(ml_items)
+                context_predictions = [None] * len(secrets)
+                context_probabilities = [None] * len(secrets)
 
             processed_secrets = 0
-            for ml_i, (item, pred_secret, proba_secret) in enumerate(zip(ml_items, preds_secret, probs_secret)):
+            for i, (item, pred_secret, proba_secret) in enumerate(zip(secrets, preds_secret, probs_secret)):
                 progress = 60 + int((processed_secrets / total_items) * 40) if total_items > 0 else 60
                 progress_detail = f"Проанализировано {processed_secrets} из {total_items} результатов"
 
@@ -591,8 +539,8 @@ class SecretClassifier:
                             raise Exception("Task timeout during ML validation")
 
                 confidence_secret = proba_secret[1]
-                pred_context = context_predictions[ml_i] if ml_i < len(context_predictions) else None
-                proba_context = context_probabilities[ml_i] if ml_i < len(context_probabilities) else None
+                pred_context = context_predictions[i] if i < len(context_predictions) else None
+                proba_context = context_probabilities[i] if i < len(context_probabilities) else None
 
                 item["secret_confidence"] = round(confidence_secret, 3)
                 item["secret_prediction"] = bool(pred_secret)
@@ -627,7 +575,7 @@ class SecretClassifier:
 
         except Exception as e:
             logger.error(f"Ошибка классификации: {e}")
-            for item in ml_items:
+            for item in secrets:
                 item["confidence"] = 1.00
                 if not item.get("severity"):
                     item["severity"] = "High"
@@ -635,7 +583,7 @@ class SecretClassifier:
         classification_time = time.time() - classification_start
         logger.info(
             f"[{ProjectName}] Классификация завершена для {len(secrets)} элементов "
-            f"(ML: {len(ml_items)}, без ML: {skipped_count}, время: {classification_time:.2f}с)"
+            f"(время: {classification_time:.2f}с)"
         )
         return secrets
 
