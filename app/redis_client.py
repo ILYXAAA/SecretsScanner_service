@@ -402,6 +402,120 @@ class RedisClient:
             logger.error(f"Ошибка обновления статуса задачи '{task_id}': {e}")
             return False
 
+    def update_task_status_from_worker(
+        self, task_id: str, worker_id: str, status: str, **kwargs
+    ) -> str:
+        """
+        Update task status on behalf of a worker.
+        Returns: 'ok', 'not_found', 'terminal', or 'not_owner'.
+        """
+        try:
+            lua_script = """
+                local task_id = KEYS[1]
+                local worker_id = ARGV[1]
+                local new_status = ARGV[2]
+                local current_time = tonumber(ARGV[3])
+                local kwargs_json = ARGV[4]
+
+                local task_json = redis.call('HGET', 'tasks:all', task_id)
+                if not task_json then
+                    return 'not_found'
+                end
+
+                local task = cjson.decode(task_json)
+                local old_status = task.status
+
+                if (old_status == 'completed' or old_status == 'failed') and new_status ~= old_status then
+                    return 'terminal'
+                end
+
+                if task.worker_id and task.worker_id ~= worker_id then
+                    return 'not_owner'
+                end
+
+                task.status = new_status
+                task.worker_id = worker_id
+
+                if old_status ~= new_status then
+                    task.progress = 0
+                    task.progress_detail = nil
+                end
+
+                local kwargs = cjson.decode(kwargs_json)
+                for key, value in pairs(kwargs) do
+                    task[key] = value
+                end
+
+                if new_status == 'completed' or new_status == 'failed' then
+                    task.completed_at = current_time
+                end
+
+                local updated_task_json = cjson.encode(task)
+                redis.call('HSET', 'tasks:all', task_id, updated_task_json)
+
+                if old_status ~= new_status then
+                    local all_statuses = {'pending', 'processing', 'downloading', 'unpacking', 'scanning', 'ml_validation', 'completed', 'failed'}
+                    for _, idx_status in ipairs(all_statuses) do
+                        if idx_status ~= new_status then
+                            redis.call('SREM', 'index:tasks:' .. idx_status, task_id)
+                        end
+                    end
+                    redis.call('SADD', 'index:tasks:' .. new_status, task_id)
+                end
+
+                return 'ok'
+            """
+
+            kwargs_json = json.dumps(kwargs)
+            current_time = time.time()
+
+            script = self.redis_client.register_script(lua_script)
+            result = script(
+                keys=[task_id],
+                args=[worker_id, status, current_time, kwargs_json],
+            )
+
+            if result == "ok":
+                logger.info(f"Задача '{task_id}' обновлена воркером '{worker_id}': -> '{status}'")
+            elif result == "terminal":
+                logger.warning(
+                    f"Воркер '{worker_id}' не обновил задачу '{task_id}': "
+                    f"терминальный статус, запрошен '{status}'"
+                )
+            elif result == "not_owner":
+                logger.warning(
+                    f"Воркер '{worker_id}' не обновил задачу '{task_id}': "
+                    f"задача назначена другому воркеру"
+                )
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Ошибка обновления статуса задачи '{task_id}' воркером '{worker_id}': {e}")
+            return "error"
+
+    def find_active_worker_for_task(self, task_id: str, max_heartbeat_age: int = 900) -> Optional[str]:
+        """Return worker_id actively processing task_id, or None."""
+        try:
+            current_time = time.time()
+            workers_data = self.redis_client.hgetall("workers:all")
+
+            for worker_id, worker_json in workers_data.items():
+                try:
+                    worker = json.loads(worker_json)
+                    if worker.get("current_task_id") != task_id:
+                        continue
+                    last_heartbeat = worker.get("last_heartbeat", 0)
+                    if (current_time - last_heartbeat) < max_heartbeat_age:
+                        return worker_id
+                except Exception:
+                    continue
+
+            return None
+        except Exception as e:
+            logger.error(f"Ошибка поиска активного воркера для задачи '{task_id}': {e}")
+            return None
+
     def get_task(self, task_id: str) -> Optional[dict]:
         """Get task by ID"""
         try:
@@ -414,6 +528,13 @@ class RedisClient:
     def retry_task(self, task_id: str) -> bool:
         """Retry failed task atomically"""
         try:
+            active_worker = self.find_active_worker_for_task(task_id)
+            if active_worker:
+                logger.warning(
+                    f"Задача '{task_id}' ещё обрабатывается воркером '{active_worker}', retry отклонён"
+                )
+                return False
+
             lua_script = """
                 local task_id = KEYS[1]
                 local current_time = tonumber(ARGV[1])
@@ -604,19 +725,30 @@ class RedisClient:
                 end
                 
                 -- Update heartbeat fields
+                local old_task_id = worker.current_task_id
                 worker.status = new_status
                 worker.last_heartbeat = current_time
                 worker.current_task_id = current_task_id
-                
-                -- Обновляем last_progress_update только если прогресс действительно изменился
-                local old_progress = worker.current_task_progress
-                if task_progress ~= nil and task_progress ~= old_progress then
-                    worker.last_progress_update = current_time
-                elseif worker.last_progress_update == nil and task_progress ~= nil then
-                    -- Первое обновление прогресса
-                    worker.last_progress_update = current_time
+
+                if current_task_id ~= old_task_id then
+                    worker.current_task_progress = nil
+                    worker.current_task_detail = nil
                 end
-                
+
+                -- Обновляем last_progress_update при смене прогресса или активной задаче
+                local old_progress = worker.current_task_progress
+                if current_task_id ~= nil then
+                    if task_progress ~= nil and task_progress ~= old_progress then
+                        worker.last_progress_update = current_time
+                    elseif task_progress == nil then
+                        worker.last_progress_update = current_time
+                    elseif worker.last_progress_update == nil then
+                        worker.last_progress_update = current_time
+                    end
+                else
+                    worker.last_progress_update = nil
+                end
+
                 worker.current_task_progress = task_progress
                 worker.current_task_detail = task_detail
                 if model_version then
@@ -883,6 +1015,15 @@ class RedisClient:
                             
                             # Problem 1: Task has no assigned worker but is in processing state
                             if not worker_id:
+                                active_worker = self.find_active_worker_for_task(task_id)
+                                if active_worker:
+                                    logger.info(
+                                        f"Задача '{task_id}' без worker_id, но активна у '{active_worker}' — восстанавливаю привязку"
+                                    )
+                                    self.update_task_status(task_id, status, worker_id=active_worker)
+                                    fixed_count += 1
+                                    continue
+
                                 logger.warning(f"Обнаружена задача '{task_id}' в статусе '{status}' без назначенного воркера")
                                 self.update_task_status(
                                     task_id, 
@@ -1079,25 +1220,47 @@ class RedisClient:
                         cleaned_count += 1
                         continue
                     
-                    # Проверка 2: Воркер обрабатывает задачу, но прогресс не меняется более 20 минут
+                    # Проверка 2: Воркер обрабатывает задачу, но нет активности более 20 минут
                     if current_task_id and status in ["scanning", "ml_validation", "downloading", "unpacking"]:
-                        if last_progress_update > 0:
-                            time_since_progress = current_time - last_progress_update
-                            if time_since_progress > stuck_timeout:
-                                logger.warning(f"Воркер {worker_id} завис на задаче {current_task_id}: прогресс не меняется {int(time_since_progress / 60)} минут")
-                                # Помечаем задачу как failed
-                                try:
+                        task_json = self.redis_client.hget("tasks:all", current_task_id)
+                        task_started_at = 0
+                        task_status = None
+                        if task_json:
+                            try:
+                                task_data = json.loads(task_json)
+                                task_started_at = task_data.get("started_at", 0) or 0
+                                task_status = task_data.get("status")
+                            except Exception:
+                                pass
+
+                        if task_status in ("completed", "failed"):
+                            self.unregister_worker(worker_id)
+                            cleaned_count += 1
+                            continue
+
+                        last_activity = max(last_heartbeat, last_progress_update or 0)
+                        time_since_activity = current_time - last_activity
+
+                        if task_started_at > 0 and (current_time - task_started_at) < stuck_timeout:
+                            continue
+
+                        if time_since_activity > stuck_timeout:
+                            logger.warning(
+                                f"Воркер {worker_id} завис на задаче {current_task_id}: "
+                                f"нет активности {int(time_since_activity / 60)} минут"
+                            )
+                            try:
+                                if task_status not in ("completed", "failed"):
                                     self.update_task_status(
                                         current_task_id,
                                         "failed",
-                                        error=f"Worker stuck - no progress for {int(time_since_progress / 60)} minutes",
+                                        error=f"Worker stuck - no activity for {int(time_since_activity / 60)} minutes",
                                         worker_id=None
                                     )
-                                except Exception as task_error:
-                                    logger.error(f"Ошибка при пометке задачи {current_task_id} как failed: {task_error}")
-                                # Отписываем воркера
-                                self.unregister_worker(worker_id)
-                                cleaned_count += 1
+                            except Exception as task_error:
+                                logger.error(f"Ошибка при пометке задачи {current_task_id} как failed: {task_error}")
+                            self.unregister_worker(worker_id)
+                            cleaned_count += 1
                         
                 except Exception as worker_error:
                     # Invalid worker data, remove it

@@ -40,6 +40,11 @@ from app.logging_config import setup_logging
 
 load_dotenv()
 
+
+class TaskRevokedError(Exception):
+    """Task was cancelled, failed, or reassigned in Redis while worker was processing it."""
+
+
 class Worker:
     def __init__(self, worker_id: Optional[str] = None):
         self.worker_id = worker_id or f"worker-{uuid.uuid4().hex[:8]}"
@@ -208,6 +213,36 @@ class Worker:
             self.logger.error(f"Ошибка проверки таймаута: {e}")
             return False
 
+    def check_task_not_revoked(self, task: dict) -> None:
+        """Abort processing if task was externally failed, completed, or reassigned."""
+        remote = self.redis_client.get_task(task["task_id"])
+        if not remote:
+            raise TaskRevokedError(f"Задача '{task['task_id']}' удалена из Redis")
+
+        remote_status = remote.get("status")
+        remote_worker = remote.get("worker_id")
+
+        if remote_status == "completed":
+            raise TaskRevokedError(f"Задача '{task['task_id']}' уже завершена")
+        if remote_status == "failed":
+            raise TaskRevokedError(
+                f"Задача '{task['task_id']}' помечена как failed: {remote.get('error', 'unknown')}"
+            )
+        if remote_worker and remote_worker != self.worker_id:
+            raise TaskRevokedError(
+                f"Задача '{task['task_id']}' переназначена воркеру '{remote_worker}'"
+            )
+
+        task["status"] = remote_status
+        if remote.get("commit"):
+            task["commit"] = remote["commit"]
+
+    def update_task_status_as_worker(self, task_id: str, status: str, **kwargs) -> str:
+        """Update task status with ownership and terminal-state guards."""
+        return self.redis_client.update_task_status_from_worker(
+            task_id, self.worker_id, status, **kwargs
+        )
+
     def cleanup_uploaded_zip(self, zip_file_path: str):
         """Clean up uploaded ZIP file"""
         try:
@@ -288,11 +323,15 @@ class Worker:
             # Обновляем commit в задаче, если получили актуальное значение
             if scanned_commit:
                 self.logger.info(f"Обновляю commit в задаче: '{commit[:8]}..' -> '{scanned_commit[:8]}..' ('{task['task_id']}')")
-                self.redis_client.update_task_status(
+                remote = self.redis_client.get_task(task["task_id"]) or task
+                current_status = remote.get("status", "downloading")
+                result = self.update_task_status_as_worker(
                     task["task_id"],
-                    task["status"],
-                    commit=scanned_commit
+                    current_status,
+                    commit=scanned_commit,
                 )
+                if result == "terminal":
+                    raise TaskRevokedError(f"Задача '{task['task_id']}' больше не активна")
                 task["commit"] = scanned_commit
             
             # Кладём в кэш под блокировкой (другой воркер мог уже заполнить)
@@ -323,7 +362,7 @@ class Worker:
         """Extract ZIP file for local scan. Returns (repo_path, temp_dir, status)"""
         temp_dir = None
         try:
-            self.redis_client.update_task_status(task["task_id"], "unpacking")
+            self.update_task_status_as_worker(task["task_id"], "unpacking")
             self.send_heartbeat("unpacking", force=True)
             
             project_name = task["project_name"]
@@ -410,7 +449,9 @@ class Worker:
     async def scan_repository(self, task: dict, repo_path: str) -> tuple[list, dict]:
         """Scan repository for secrets"""
         try:
-            self.redis_client.update_task_status(task["task_id"], "scanning")
+            result = self.update_task_status_as_worker(task["task_id"], "scanning")
+            if result == "terminal":
+                raise TaskRevokedError(f"Задача '{task['task_id']}' больше не активна")
             self.send_heartbeat("scanning", force=True)
             
             project_name = task["project_name"]
@@ -452,7 +493,9 @@ class Worker:
                 raise Exception("Task timeout before ML filtering")
             
             # Apply ML filtering with worker instance for heartbeat
-            self.redis_client.update_task_status(task["task_id"], "ml_validation")
+            result = self.update_task_status_as_worker(task["task_id"], "ml_validation")
+            if result == "terminal":
+                raise TaskRevokedError(f"Задача '{task['task_id']}' больше не активна")
             self.send_heartbeat("ml_validation", force=True)
             
             self.logger.info(f"Применяю ML фильтрацию для '{project_name}' ('{task['task_id']}')")
@@ -489,7 +532,9 @@ class Worker:
     async def analyze_forbidden_check(self, task: dict, repo_path: str) -> dict:
         """Analyze repository for forbidden languages and extensions"""
         try:
-            self.redis_client.update_task_status(task["task_id"], "analyzing")
+            result = self.update_task_status_as_worker(task["task_id"], "analyzing")
+            if result == "terminal":
+                raise TaskRevokedError(f"Задача '{task['task_id']}' больше не активна")
             self.send_heartbeat("analyzing", force=True)
 
             project_name = task["project_name"]
@@ -634,6 +679,8 @@ class Worker:
             else:
                 raise ValueError(f"Unknown task type: {task_type}")
 
+            self.check_task_not_revoked(task)
+
             if not repo_path:
                 raise Exception(f"Failed to prepare repository: {status}")
 
@@ -663,12 +710,18 @@ class Worker:
                 await self.send_callback(task, payload)
 
                 execution_time = time.time() - execution_start_time
-                self.redis_client.update_task_status(
+                self.check_task_not_revoked(task)
+                result = self.update_task_status_as_worker(
                     task_id,
                     "completed",
                     results_count=results["summary"]["violations_count"],
                     execution_time=execution_time
                 )
+                if result != "ok":
+                    self.logger.warning(
+                        f"Не удалось пометить задачу '{task_id}' completed: {result}"
+                    )
+                    return
                 self.update_worker_stats(completed=1)
                 self.logger.info(
                     f"Задача '{task_id}' успешно завершена за {execution_time:.2f}с ('{project_name}')"
@@ -676,10 +729,13 @@ class Worker:
                 return
 
             # Secret scan flow
+            self.check_task_not_revoked(task)
             results, scan_data = await self.scan_repository(task, repo_path)
             
             if self.check_task_timeout(task):
                 raise Exception("Task timeout after scanning")
+            
+            self.check_task_not_revoked(task)
             
             # Prepare callback payload
             request_data = original_data["request"]
@@ -704,17 +760,28 @@ class Worker:
             # Calculate execution time and mark as completed
             execution_time = time.time() - execution_start_time
             
-            self.redis_client.update_task_status(
+            result = self.update_task_status_as_worker(
                 task_id,
                 "completed",
                 results_count=len(scan_data["results"]),
                 execution_time=execution_time
             )
+            if result != "ok":
+                self.logger.warning(
+                    f"Не удалось пометить задачу '{task_id}' completed: {result}"
+                )
+                return
             
             # Update worker stats
             self.update_worker_stats(completed=1)
             
             self.logger.info(f"Задача '{task_id}' успешно завершена за {execution_time:.2f}с ('{project_name}')")
+            
+        except TaskRevokedError as e:
+            execution_time = time.time() - execution_start_time
+            self.logger.warning(
+                f"Обработка задачи прервана: {e} (время: {execution_time:.2f}с) ('{task_id}')"
+            )
             
         except Exception as e:
             error_msg = str(e)
@@ -722,17 +789,21 @@ class Worker:
             
             self.logger.error(f"Ошибка обработки задачи: {error_msg} (время: {execution_time:.2f}с) ('{task_id}') ")
             
-            # Mark as failed
-            self.redis_client.update_task_status(
-                task_id,
-                "failed",
-                error=error_msg,
-                worker_id=None,
-                execution_time=execution_time
-            )
-            
-            # Update worker stats
-            self.update_worker_stats(failed=1)
+            remote = self.redis_client.get_task(task_id)
+            remote_status = remote.get("status") if remote else None
+            if remote_status in ("completed", "failed"):
+                self.logger.warning(
+                    f"Задача '{task_id}' уже в статусе '{remote_status}', пропускаю повторную пометку failed"
+                )
+            else:
+                self.redis_client.update_task_status(
+                    task_id,
+                    "failed",
+                    error=error_msg,
+                    worker_id=None,
+                    execution_time=execution_time
+                )
+                self.update_worker_stats(failed=1)
             
             # Send error callback if possible
             try:
@@ -923,12 +994,15 @@ class Worker:
                 if self.current_task:
                     task_id = self.current_task.get("task_id")
                     if task_id:
-                        self.redis_client.update_task_status(
-                            task_id,
-                            "failed",
-                            error="Worker shutdown",
-                            worker_id=None
-                        )
+                        remote = self.redis_client.get_task(task_id)
+                        if remote and remote.get("status") not in ("completed", "failed"):
+                            if remote.get("worker_id") in (None, self.worker_id):
+                                self.redis_client.update_task_status(
+                                    task_id,
+                                    "failed",
+                                    error="Worker shutdown",
+                                    worker_id=None
+                                )
                 
                 # Unregister from Redis
                 self.redis_client.unregister_worker(self.worker_id)
