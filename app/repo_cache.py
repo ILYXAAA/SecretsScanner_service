@@ -1,5 +1,5 @@
 """
-Кэш скачанных репозиториев. Хранение 7 дней по short commit.
+Кэш скачанных репозиториев. Хранение 7 дней по ключу {repo_end}_{short_commit}.
 Используется только для сканов по URL (не для local_scan ZIP).
 """
 import os
@@ -7,6 +7,7 @@ import re
 import time
 import shutil
 import logging
+from urllib.parse import urlparse, unquote
 
 logger = logging.getLogger("repo_cache")
 
@@ -25,9 +26,33 @@ def get_cache_dir():
     return _REPO_CACHE_DIR
 
 
+def _sanitize_cache_segment(value: str) -> str:
+    """Безопасный сегмент имени папки кэша."""
+    value = re.sub(r"[^a-zA-Z0-9_]", "_", value.strip())
+    return value or "unknown"
+
+
+def get_repo_end(repo_url: str) -> str:
+    """
+    Последний сегмент URL репозитория без расширения .git.
+    Примеры:
+      .../_git/scifrac_python -> scifrac_python
+      .../owner/repo.git -> repo
+    """
+    if not repo_url:
+        return "unknown"
+    path = urlparse(repo_url).path.rstrip("/")
+    if not path:
+        return "unknown"
+    name = unquote(path.split("/")[-1])
+    if name.lower().endswith(".git"):
+        name = name[:-4]
+    return _sanitize_cache_segment(name)
+
+
 def get_short_commit(task: dict) -> str:
     """
-    Извлекает short commit из задачи для использования как ключ кэша.
+    Извлекает short commit из задачи.
     Для DevZone используется ref или commit, для остальных — commit.
     """
     commit = task.get("commit") or ""
@@ -35,19 +60,24 @@ def get_short_commit(task: dict) -> str:
     value = (commit or ref or "unknown").strip()
     if len(value) >= 8:
         value = value[:8]
-    # Только буквы, цифры, подчёркивание (безопасно для имени папки)
-    value = re.sub(r"[^a-zA-Z0-9_]", "_", value)
-    return value or "unknown"
+    return _sanitize_cache_segment(value)
 
 
-def get_cache_path(short_commit: str) -> str:
-    """Путь к папке кэша для данного short commit."""
-    return os.path.join(_REPO_CACHE_DIR, short_commit)
+def get_cache_key(task: dict) -> str:
+    """Ключ кэша: {repo_end}_{short_commit}."""
+    repo_end = get_repo_end(task.get("repo_url") or "")
+    short_commit = get_short_commit(task)
+    return f"{repo_end}_{short_commit}"
 
 
-def get_lock_path(short_commit: str) -> str:
-    """Путь к файлу блокировки для данного short commit."""
-    return os.path.join(_REPO_CACHE_DIR, short_commit + LOCK_SUFFIX)
+def get_cache_path(cache_key: str) -> str:
+    """Путь к папке кэша для данного ключа."""
+    return os.path.join(_REPO_CACHE_DIR, cache_key)
+
+
+def get_lock_path(cache_key: str) -> str:
+    """Путь к файлу блокировки для данного ключа кэша."""
+    return os.path.join(_REPO_CACHE_DIR, cache_key + LOCK_SUFFIX)
 
 
 def _last_used_path(cache_path: str) -> str:

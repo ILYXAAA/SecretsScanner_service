@@ -20,7 +20,7 @@ if project_root not in sys.path:
 from app.redis_client import get_redis_client
 from app.repo_utils import download_repo, delete_dir
 from app.repo_cache import (
-    get_short_commit,
+    get_cache_key,
     get_cache_path,
     get_lock_path,
     is_cache_valid,
@@ -276,13 +276,15 @@ class Worker:
             ref_type = task.get("ref_type")
             ref = task.get("ref")
             
-            short_commit = get_short_commit(task)
-            cache_path = get_cache_path(short_commit)
+            cache_key = get_cache_key(task)
+            cache_path = get_cache_path(cache_key)
             
             # Проверка кэша: если есть актуальная запись — используем её
             if is_cache_valid(cache_path):
                 touch_cache_used(cache_path)
-                self.logger.info(f"Кэш репозитория (commit {short_commit}), пропуск скачивания ('{task['task_id']}')")
+                self.logger.info(
+                    f"Кэш репозитория ({cache_key}), пропуск скачивания ('{task['task_id']}')"
+                )
                 return cache_path, None, "Success"
             
             is_devzone = "devzone.local" in repo_url.lower()
@@ -333,14 +335,18 @@ class Worker:
                 if result == "terminal":
                     raise TaskRevokedError(f"Задача '{task['task_id']}' больше не активна")
                 task["commit"] = scanned_commit
+                cache_key = get_cache_key(task)
+                cache_path = get_cache_path(cache_key)
             
             # Кладём в кэш под блокировкой (другой воркер мог уже заполнить)
             try:
-                with acquire_lock(get_lock_path(short_commit)):
+                with acquire_lock(get_lock_path(cache_key)):
                     if is_cache_valid(cache_path):
                         self.cleanup_temp_directory(temp_dir)
                         touch_cache_used(cache_path)
-                        self.logger.info(f"Кэш репозитория (commit {short_commit}) заполнен другим воркером ('{task['task_id']}')")
+                        self.logger.info(
+                            f"Кэш репозитория ({cache_key}) заполнен другим воркером ('{task['task_id']}')"
+                        )
                         return cache_path, None, "Success"
                     if move_extracted_to_cache(extracted_path, cache_path):
                         self.cleanup_temp_directory(temp_dir)
