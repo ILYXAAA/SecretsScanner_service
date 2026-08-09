@@ -1,12 +1,16 @@
+import logging
 import math
 import os
 import subprocess
+import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import yaml
+
+logger = logging.getLogger("forbidden_check")
 
 DEFAULT_CONFIG_PATH = "Settings/languages_repo_config.yml"
 
@@ -62,8 +66,9 @@ def load_languages_repo_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
 
 
 class ForbiddenRepositoryAnalyzer:
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, project_name: str = "unknown"):
         self.config = config
+        self.project_name = project_name
         self.violations = []
         self.languages = defaultdict(int)
         self.categories = defaultdict(int)
@@ -74,6 +79,9 @@ class ForbiddenRepositoryAnalyzer:
         self.total_files = 0
         self.scan_date = datetime.now().isoformat()
         self._forbidden_languages_found = set()
+        self.skipped_dotfiles = 0
+        self.skipped_oversized = 0
+        self.skipped_os_errors = 0
 
     def calculate_entropy(self, data: bytes) -> float:
         if not data:
@@ -247,19 +255,62 @@ class ForbiddenRepositoryAnalyzer:
                 "violation_reasons": violation_reasons,
             })
         except OSError:
+            self.skipped_os_errors += 1
             return
 
-    def scan_directory(self, directory: str) -> None:
+    def _collect_files(self, directory: str) -> list[tuple[str, str]]:
+        """Собирает список файлов для анализа (аналогично scanner.py)."""
+        file_list = []
+        max_size = self.config["max_file_size_mb"] * 1024 * 1024
+
         for root, dirs, files in os.walk(directory):
             dirs[:] = [d for d in dirs if not d.startswith(".") and d != "node_modules"]
 
             for filename in files:
                 if filename.startswith("."):
+                    self.skipped_dotfiles += 1
                     continue
 
                 file_path = os.path.join(root, filename)
+                try:
+                    if os.path.getsize(file_path) > max_size:
+                        self.skipped_oversized += 1
+                        continue
+                except OSError:
+                    self.skipped_os_errors += 1
+                    continue
+
                 relative_path = os.path.relpath(file_path, directory)
-                self.analyze_file(file_path, relative_path)
+                file_list.append((file_path, relative_path))
+
+        return file_list
+
+    def scan_directory(self, directory: str) -> None:
+        collection_start = time.time()
+        file_list = self._collect_files(directory)
+        collection_time = time.time() - collection_start
+
+        logger.info(
+            f"['{self.project_name}'] Найдено файлов для проверки: '{len(file_list)}' "
+            f"(время сбора: {collection_time:.2f}с)"
+        )
+
+        skipped_parts = []
+        if self.skipped_dotfiles:
+            skipped_parts.append(f"dotfiles=`{self.skipped_dotfiles}`")
+        if self.skipped_oversized:
+            skipped_parts.append(f"oversized=`{self.skipped_oversized}`")
+        if self.skipped_os_errors:
+            skipped_parts.append(f"os_errors=`{self.skipped_os_errors}`")
+        if skipped_parts:
+            logger.info(f"['{self.project_name}'] Пропущены файлы: {', '.join(skipped_parts)}")
+
+        analysis_start = time.time()
+        for file_path, relative_path in file_list:
+            self.analyze_file(file_path, relative_path)
+        analysis_time = time.time() - analysis_start
+
+        logger.info(f"['{self.project_name}'] Анализ файлов завершён (время: {analysis_time:.2f}с)")
 
     def build_result(self) -> dict:
         violations_count = len(self.violations)
@@ -285,11 +336,43 @@ class ForbiddenRepositoryAnalyzer:
 def analyze_repository(
     repo_path: str,
     config_path: str = DEFAULT_CONFIG_PATH,
+    project_name: str = "unknown",
 ) -> dict:
+    scan_start = time.time()
+    logger.info(f"['{project_name}'] Начинаю forbidden check, repo_path='{repo_path}'")
+
     config = load_languages_repo_config(config_path)
-    analyzer = ForbiddenRepositoryAnalyzer(config)
+    analyzer = ForbiddenRepositoryAnalyzer(config, project_name=project_name)
 
     if os.path.isdir(repo_path):
         analyzer.scan_directory(repo_path)
+    else:
+        logger.warning(f"['{project_name}'] Путь не является директорией: '{repo_path}'")
 
-    return analyzer.build_result()
+    result = analyzer.build_result()
+    summary = result["summary"]
+    total_time = time.time() - scan_start
+
+    top_languages = sorted(analyzer.languages.items(), key=lambda x: x[1], reverse=True)[:10]
+    languages_str = ", ".join(f"{lang}={count}" for lang, count in top_languages) or "нет"
+    top_categories = ", ".join(f"{cat}={count}" for cat, count in sorted(analyzer.categories.items())) or "нет"
+    blocking_exts = ", ".join(f"`{ext}`" for ext in sorted(analyzer.blocking_extensions.keys())[:15]) or "нет"
+
+    logger.info(f"['{project_name}'] Категории файлов: {top_categories}")
+    logger.info(f"['{project_name}'] Языки (top-10): {languages_str}")
+    if summary["violations_count"]:
+        logger.info(
+            f"['{project_name}'] Блокирующие расширения: {blocking_exts}"
+        )
+        logger.info(
+            f"['{project_name}'] Запрещённые языки: "
+            f"{', '.join(summary['forbidden_languages_found']) or 'нет'}"
+        )
+
+    logger.info(
+        f"['{project_name}'] Forbidden check завершён. "
+        f"Файлов: '{summary['total_files']}', нарушений: '{summary['violations_count']}', "
+        f"passed: '{summary['passed']}' (общее время: {total_time:.2f}с)"
+    )
+
+    return result

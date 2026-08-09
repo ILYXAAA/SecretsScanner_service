@@ -7,6 +7,7 @@ import asyncio
 import tempfile
 import uuid
 import multiprocessing
+from functools import partial
 from typing import Optional, Dict, Any
 from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
@@ -21,6 +22,7 @@ from app.redis_client import get_redis_client
 from app.repo_utils import download_repo, delete_dir
 from app.repo_cache import (
     get_cache_key,
+    describe_cache_key,
     get_cache_path,
     get_lock_path,
     is_cache_valid,
@@ -278,12 +280,15 @@ class Worker:
             
             cache_key = get_cache_key(task)
             cache_path = get_cache_path(cache_key)
+            cache_desc = describe_cache_key(task)
             
             # Проверка кэша: если есть актуальная запись — используем её
             if is_cache_valid(cache_path):
                 touch_cache_used(cache_path)
                 self.logger.info(
-                    f"Кэш репозитория ({cache_key}), пропуск скачивания ('{task['task_id']}')"
+                    f"Кэш репозитория ({cache_desc}), repo_url='{repo_url}', "
+                    f"commit='{(commit or '')[:8]}..', path='{cache_path}', "
+                    f"пропуск скачивания ('{task['task_id']}')"
                 )
                 return cache_path, None, "Success"
             
@@ -337,6 +342,7 @@ class Worker:
                 task["commit"] = scanned_commit
                 cache_key = get_cache_key(task)
                 cache_path = get_cache_path(cache_key)
+                cache_desc = describe_cache_key(task)
             
             # Кладём в кэш под блокировкой (другой воркер мог уже заполнить)
             try:
@@ -345,13 +351,19 @@ class Worker:
                         self.cleanup_temp_directory(temp_dir)
                         touch_cache_used(cache_path)
                         self.logger.info(
-                            f"Кэш репозитория ({cache_key}) заполнен другим воркером ('{task['task_id']}')"
+                            f"Кэш репозитория ({cache_desc}), repo_url='{repo_url}', "
+                            f"commit='{(task.get('commit') or '')[:8]}..', path='{cache_path}', "
+                            f"заполнен другим воркером ('{task['task_id']}')"
                         )
                         return cache_path, None, "Success"
                     if move_extracted_to_cache(extracted_path, cache_path):
                         self.cleanup_temp_directory(temp_dir)
                         temp_dir = None
-                        self.logger.info(f"Репозиторий сохранён в кэш '{cache_path}' ('{task['task_id']}')")
+                        self.logger.info(
+                            f"Репозиторий сохранён в кэш ({cache_desc}), repo_url='{repo_url}', "
+                            f"commit='{(task.get('commit') or '')[:8]}..', path='{cache_path}' "
+                            f"('{task['task_id']}')"
+                        )
                         return cache_path, None, "Success"
             except TimeoutError as e:
                 self.logger.warning(f"Таймаут блокировки кэша: {e}, используем временную папку")
@@ -544,7 +556,14 @@ class Worker:
             self.send_heartbeat("analyzing", force=True)
 
             project_name = task["project_name"]
-            self.logger.info(f"Начинаю forbidden check '{project_name}' ('{task['task_id']}')")
+            repo_url = task.get("repo_url") or ""
+            commit = task.get("commit") or ""
+            cache_desc = describe_cache_key(task)
+            self.logger.info(
+                f"Начинаю forbidden check '{project_name}' ('{task['task_id']}'), "
+                f"repo_url='{repo_url}', commit='{commit[:8]}..', "
+                f"repo_path='{repo_path}', cache='{cache_desc}'"
+            )
             start_time = time.time()
 
             if self.check_task_timeout(task):
@@ -553,7 +572,13 @@ class Worker:
             try:
                 results = await asyncio.wait_for(
                     asyncio.get_event_loop().run_in_executor(
-                        None, analyze_repository, repo_path, DEFAULT_CONFIG_PATH
+                        None,
+                        partial(
+                            analyze_repository,
+                            repo_path,
+                            DEFAULT_CONFIG_PATH,
+                            project_name,
+                        ),
                     ),
                     timeout=900
                 )
@@ -561,10 +586,11 @@ class Worker:
                 raise Exception("Forbidden check timeout exceeded (15 minutes)")
 
             total_time = time.time() - start_time
-            violations_count = results["summary"]["violations_count"]
+            summary = results["summary"]
             self.logger.info(
-                f"Forbidden check завершён за {total_time:.2f}с. "
-                f"Нарушений: '{violations_count}' ('{task['task_id']}')"
+                f"Forbidden check '{project_name}' завершён за {total_time:.2f}с. "
+                f"Файлов: '{summary['total_files']}', нарушений: '{summary['violations_count']}', "
+                f"passed: '{summary['passed']}' ('{task['task_id']}')"
             )
 
             return results

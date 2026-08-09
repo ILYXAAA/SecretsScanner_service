@@ -1,7 +1,8 @@
 """
-Кэш скачанных репозиториев. Хранение 7 дней по ключу {repo_end}_{short_commit}.
+Кэш скачанных репозиториев. Хранение 7 дней по ключу {md5(repo_url)}_{short_commit}.
 Используется только для сканов по URL (не для local_scan ZIP).
 """
+import hashlib
 import os
 import re
 import time
@@ -30,6 +31,31 @@ def _sanitize_cache_segment(value: str) -> str:
     """Безопасный сегмент имени папки кэша."""
     value = re.sub(r"[^a-zA-Z0-9_]", "_", value.strip())
     return value or "unknown"
+
+
+def normalize_repo_url(repo_url: str) -> str:
+    """
+    Нормализует URL репозитория для стабильного хеширования.
+    Разные хабы (Azure/GitLab) могут иметь одинаковое имя репозитория, но разный полный URL.
+    """
+    repo_url = (repo_url or "").strip()
+    if not repo_url:
+        return ""
+    parsed = urlparse(repo_url)
+    scheme = (parsed.scheme or "https").lower()
+    netloc = parsed.netloc.lower()
+    path = unquote(parsed.path.rstrip("/"))
+    if path.lower().endswith(".git"):
+        path = path[:-4]
+    return f"{scheme}://{netloc}{path}"
+
+
+def get_repo_url_hash(repo_url: str) -> str:
+    """MD5-хеш нормализованного URL репозитория (32 hex-символа)."""
+    normalized = normalize_repo_url(repo_url)
+    if not normalized:
+        return "unknown"
+    return hashlib.md5(normalized.encode("utf-8")).hexdigest()
 
 
 def get_repo_end(repo_url: str) -> str:
@@ -64,10 +90,20 @@ def get_short_commit(task: dict) -> str:
 
 
 def get_cache_key(task: dict) -> str:
-    """Ключ кэша: {repo_end}_{short_commit}."""
-    repo_end = get_repo_end(task.get("repo_url") or "")
+    """Ключ кэша: {md5(normalized_repo_url)}_{short_commit}."""
+    repo_url = task.get("repo_url") or ""
+    url_hash = get_repo_url_hash(repo_url)
     short_commit = get_short_commit(task)
-    return f"{repo_end}_{short_commit}"
+    return f"{url_hash}_{short_commit}"
+
+
+def describe_cache_key(task: dict) -> str:
+    """Человекочитаемое описание ключа кэша для логов."""
+    repo_url = task.get("repo_url") or ""
+    repo_end = get_repo_end(repo_url)
+    url_hash = get_repo_url_hash(repo_url)
+    short_commit = get_short_commit(task)
+    return f"{repo_end}#{url_hash[:8]}_{short_commit}"
 
 
 def get_cache_path(cache_key: str) -> str:
