@@ -3,6 +3,7 @@ import asyncio
 import yaml
 import re
 from app.model_loader import get_model_instance
+from app.repo_utils import recover_zip_path_encoding
 import aiohttp
 import time
 import fnmatch
@@ -207,7 +208,9 @@ def detect_frameworks(target_dir):
     for root, _, files in os.walk(target_dir):
         for file in files:
             file_path = os.path.join(root, file)
-            relative_path = file_path.replace(target_dir, "").replace("\\", "/").lstrip("/")
+            relative_path = recover_zip_path_encoding(
+                file_path.replace(target_dir, "").replace("\\", "/").lstrip("/")
+            )
             
             # Проверка манифест-файлов
             if file in manifest_files:
@@ -368,7 +371,9 @@ async def _analyze_file(file_path, rules, target_dir, max_line_length=MAX_LINE_L
     try:
         with open(file_path, "r", encoding="UTF-8", errors="ignore") as f:
             lines = f.readlines()
-        relative_path = "/" + os.path.relpath(file_path, target_dir).replace("\\", "/")
+        relative_path = "/" + recover_zip_path_encoding(
+            os.path.relpath(file_path, target_dir).replace("\\", "/")
+        )
         for line_num, line in enumerate(lines, start=1):
             if len(line) > max_line_length:
                 continue

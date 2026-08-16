@@ -19,7 +19,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from app.redis_client import get_redis_client
-from app.repo_utils import download_repo, delete_dir
+from app.repo_utils import download_repo, delete_dir, fix_zip_filenames
 from app.repo_cache import (
     get_cache_key,
     describe_cache_key,
@@ -413,6 +413,7 @@ class Worker:
             
             try:
                 with zipfile.ZipFile(zip_file_path, 'r') as zip_file:
+                    fix_zip_filenames(zip_file)
                     # Check total uncompressed size
                     for info in zip_file.infolist():
                         extracted_size += info.file_size

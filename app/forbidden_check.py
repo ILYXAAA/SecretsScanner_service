@@ -10,6 +10,8 @@ from typing import Optional
 
 import yaml
 
+from app.repo_utils import recover_zip_path_encoding
+
 logger = logging.getLogger("forbidden_check")
 
 DEFAULT_CONFIG_PATH = "Settings/languages_repo_config.yml"
@@ -280,7 +282,7 @@ class ForbiddenRepositoryAnalyzer:
                     self.skipped_os_errors += 1
                     continue
 
-                relative_path = os.path.relpath(file_path, directory)
+                relative_path = recover_zip_path_encoding(os.path.relpath(file_path, directory))
                 file_list.append((file_path, relative_path))
 
         return file_list

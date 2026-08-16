@@ -133,6 +133,46 @@ async def download_repo(repo_url, commit_id, extract_path, worker_instance=None,
     
     return extracted_path, status, scanned_commit
 
+# ZIP bit 11: filename is UTF-8. Without it, Python zipfile always decodes as CP437.
+_ZIP_UTF8_FLAG = 0x800
+
+
+def recover_zip_path_encoding(path: str) -> str:
+    """
+    Восстанавливает кириллицу в пути ZIP, если имя прочитали как CP437.
+
+    Python zipfile без UTF-8 флага декодирует имена как CP437 (DOS US).
+    Русские ZIP с Windows/Jenkins хранят имена в CP866, поэтому
+    «Описание эндпоинтов.md» превращается в «Ä»¿ßá¡¿Ñ φ¡ñ»«¿¡Γ«ó.md».
+    Часть архивов пишет UTF-8, но флаг не ставит.
+    """
+    try:
+        raw = path.encode("cp437")
+    except UnicodeEncodeError:
+        return path
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("cp866")
+
+
+def decode_zip_filename(info: zipfile.ZipInfo) -> str:
+    """Восстанавливает имя файла из ZIP (см. recover_zip_path_encoding)."""
+    if info.flag_bits & _ZIP_UTF8_FLAG:
+        return info.filename
+    return recover_zip_path_encoding(info.filename)
+
+
+def fix_zip_filenames(zip_file: zipfile.ZipFile) -> None:
+    """Исправляет имена файлов в открытом ZipFile перед распаковкой."""
+    zip_file.NameToInfo.clear()
+    for info in zip_file.infolist():
+        decoded = decode_zip_filename(info)
+        if decoded != info.filename:
+            info.filename = decoded
+        zip_file.NameToInfo[info.filename] = info
+
+
 def safe_extract(zip_file, extract_path):
     """
     Безопасная распаковка ZIP архива с фильтрацией нежелательных файлов
@@ -143,7 +183,8 @@ def safe_extract(zip_file, extract_path):
         excluded_extensions: список исключенных расширений (например, ['.exe', '.bat'])
         excluded_files: список исключенных имен файлов (например, ['autorun.inf', 'desktop.ini'])
     """
-    
+    fix_zip_filenames(zip_file)
+
     for member in zip_file.infolist():
         filename = member.filename
 
@@ -228,6 +269,7 @@ async def download_repo_azure(repo_url, commit_id, extract_path):
                 logger.info(f"[DOWNLOAD_AZURE] Размер загруженного архива: '{archive_size / 1024 / 1024:.2f} MB'")
 
                 with zipfile.ZipFile(temp_zip_path) as zip_file:
+                    fix_zip_filenames(zip_file)
                     zip_file.extractall(extract_path)
                     # safe_extract(zip_file, extract_path)
                 
@@ -261,6 +303,8 @@ def extract_github_archive(zip_file, extract_path):
     """
     Извлекает GitHub архив, убирая корневую папку с именем репозитория
     """
+    fix_zip_filenames(zip_file)
+
     # Получаем список всех файлов в архиве
     file_list = zip_file.namelist()
     
@@ -881,6 +925,7 @@ async def download_devzone_repo(repo_url, ref_type, ref_value, extract_path, wor
         
         try:
             with zipfile.ZipFile(temp_zip_path) as zip_file:
+                fix_zip_filenames(zip_file)
                 zip_file.extractall(extract_path)
             logger.info(f"[DOWNLOAD_DEVZONE] Архив распакован в: {extract_path}")
         except zipfile.BadZipFile:
