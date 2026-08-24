@@ -623,11 +623,12 @@ async def download_devzone_repo(repo_url, ref_type, ref_value, extract_path, wor
         worker_instance: экземпляр Worker для отправки heartbeat (опционально)
     
     Returns:
-        (extract_path: str, status: str)
+        (extract_path: str, status: str, commit_sha: Optional[str])
     
     Note:
         ref_type и ref_value передаются в Jenkins Job как параметры checkout_mode и get_branch соответственно.
     """
+    commit_sha = None
     try:
         # Загружаем параметры из переменных окружения
         jenkins_job_url = os.getenv("DEVZONE_JENKINS_JOB_URL")
@@ -637,7 +638,7 @@ async def download_devzone_repo(repo_url, ref_type, ref_value, extract_path, wor
         if not jenkins_job_url or not jenkins_login or not jenkins_api_token:
             error_msg = "Не заданы переменные окружения для Jenkins (DEVZONE_JENKINS_JOB_URL, JENKINS_LOGIN, JENKINS_API_TOKEN)"
             logger.error(error_msg)
-            return "", error_msg
+            return "", error_msg, None
         
         # Парсим URL для получения project_path
         try:
@@ -645,14 +646,14 @@ async def download_devzone_repo(repo_url, ref_type, ref_value, extract_path, wor
         except ValueError as e:
             error_msg = f"Ошибка парсинга URL DevZone: {e}"
             logger.error(error_msg)
-            return "", error_msg
+            return "", error_msg, None
         
         # Валидация ref_type
         valid_ref_types = ["branch", "tag", "commit"]
         if ref_type.lower() not in valid_ref_types:
             error_msg = f"Неверный тип ref: {ref_type}. Допустимые значения: {', '.join(valid_ref_types)}"
             logger.error(error_msg)
-            return "", error_msg
+            return "", error_msg, None
         
         extract_path = extract_path if extract_path.endswith("/") else f"{extract_path}/"
         os.makedirs(extract_path, exist_ok=True)
@@ -767,13 +768,13 @@ async def download_devzone_repo(repo_url, ref_type, ref_value, extract_path, wor
             except requests.RequestException as e:
                 error_msg = f"Ошибка запуска Jenkins Job: {e}"
                 logger.error(error_msg)
-                return "", error_msg
+                return "", error_msg, commit_sha
             
             queue_url = r.headers.get("Location")
             if not queue_url:
                 error_msg = "Не удалось получить URL очереди Jenkins"
                 logger.error(error_msg)
-                return "", error_msg
+                return "", error_msg, commit_sha
             
             logger.info(f"[DOWNLOAD_DEVZONE] Jenkins Job поставлен в очередь: {queue_url}")
             
@@ -789,7 +790,7 @@ async def download_devzone_repo(repo_url, ref_type, ref_value, extract_path, wor
                 if time.time() - queue_wait_start > queue_timeout:
                     error_msg = f"Таймаут ожидания в очереди Jenkins ({queue_timeout} сек)"
                     logger.error(error_msg)
-                    return "", error_msg
+                    return "", error_msg, commit_sha
                 
                 # Отправляем heartbeat при необходимости
                 if worker_instance and (time.time() - last_heartbeat) >= heartbeat_interval:
@@ -825,7 +826,7 @@ async def download_devzone_repo(repo_url, ref_type, ref_value, extract_path, wor
                 if time.time() - build_wait_start > build_timeout:
                     error_msg = f"Таймаут выполнения Jenkins Job ({build_timeout} сек)"
                     logger.error(error_msg)
-                    return "", error_msg
+                    return "", error_msg, commit_sha
                 
                 # Отправляем heartbeat при необходимости
                 if worker_instance and (time.time() - last_heartbeat) >= heartbeat_interval:
@@ -868,7 +869,7 @@ async def download_devzone_repo(repo_url, ref_type, ref_value, extract_path, wor
                 if build_data.get("result") != "SUCCESS":
                     error_msg = f"Jenkins Job завершился с ошибкой: {build_data.get('result', 'UNKNOWN')}"
                     logger.error(error_msg)
-                    return "", error_msg
+                    return "", error_msg, commit_sha
             except requests.RequestException as e:
                 logger.warning(f"[DOWNLOAD_DEVZONE] Не удалось проверить результат билда: {e}")
             
