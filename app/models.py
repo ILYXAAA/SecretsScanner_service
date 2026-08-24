@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 
 class ScanRequest(BaseModel):
     ProjectName: str
@@ -39,3 +39,15 @@ class LocalScanRequest(BaseModel):
     ProjectName: str
     RepoUrl: str
     CallbackUrl: str
+
+
+class RepoCredentialsUpdate(BaseModel):
+    login: Optional[str] = None
+    password: Optional[str] = None
+    pat_token: Optional[str] = None
+
+
+class JenkinsCredentialsUpdate(BaseModel):
+    login: Optional[str] = None
+    api_token: Optional[str] = None
+    job_url: Optional[str] = None

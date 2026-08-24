@@ -13,8 +13,10 @@ import shutil
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
+from typing import Optional
 from app.redis_client import get_redis_client
-from typing import List, Optional
+from app.models import RepoCredentialsUpdate, JenkinsCredentialsUpdate
+from app.credentials import get_credentials_status, update_repo_credentials, update_jenkins_credentials
 
 load_dotenv()
 logger = logging.getLogger("admin_routes")
@@ -908,3 +910,59 @@ async def switch_model_version(version: str = Form(..., description="Version to 
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка смены версии модели: {e}")
+
+
+@admin_router.get("/credentials", dependencies=[Depends(validate_admin_api_key)])
+async def get_credentials():
+    """Статус кредов для репозиториев и Jenkins (без полных значений)."""
+    try:
+        return {
+            "status": "success",
+            "credentials": get_credentials_status(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка чтения кредов: {e}")
+
+
+@admin_router.post("/credentials/repo", dependencies=[Depends(validate_admin_api_key)])
+async def set_repo_credentials(payload: RepoCredentialsUpdate):
+    """Обновить креды для скачивания репозиториев (NTLM login/password, PAT)."""
+    if payload.login is None and payload.password is None and payload.pat_token is None:
+        raise HTTPException(status_code=400, detail="Укажите хотя бы одно поле: login, password, pat_token")
+
+    try:
+        updated = update_repo_credentials(
+            login=payload.login,
+            password=payload.password,
+            pat_token=payload.pat_token,
+        )
+        return {
+            "status": "success",
+            "message": f"Обновлены поля: {', '.join(updated)}",
+            "updated": updated,
+            "credentials": get_credentials_status()["repo"],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка сохранения кредов репозитория: {e}")
+
+
+@admin_router.post("/credentials/jenkins", dependencies=[Depends(validate_admin_api_key)])
+async def set_jenkins_credentials(payload: JenkinsCredentialsUpdate):
+    """Обновить креды для DevZone Jenkins (login, api_token, job_url)."""
+    if payload.login is None and payload.api_token is None and payload.job_url is None:
+        raise HTTPException(status_code=400, detail="Укажите хотя бы одно поле: login, api_token, job_url")
+
+    try:
+        updated = update_jenkins_credentials(
+            login=payload.login,
+            api_token=payload.api_token,
+            job_url=payload.job_url,
+        )
+        return {
+            "status": "success",
+            "message": f"Обновлены поля: {', '.join(updated)}",
+            "updated": updated,
+            "credentials": get_credentials_status()["jenkins"],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка сохранения Jenkins кредов: {e}")

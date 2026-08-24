@@ -10,7 +10,7 @@ import io
 import shutil
 import yaml
 from dotenv import load_dotenv
-from app.secure_save import decrypt_from_file
+from app.credentials import get_repo_credentials, get_jenkins_credentials
 import urllib3
 import time
 import asyncio
@@ -44,14 +44,19 @@ load_dotenv()
 HubType = os.getenv("HubType")
 MAX_PATH = 250
 
-# Аутентификация
+# Аутентификация (перечитывается перед каждым скачиванием)
+pat = None
+username = None
+password = None
+
+
+def reload_repo_credentials() -> None:
+    global pat, username, password
+    username, password, pat = get_repo_credentials()
+
+
 try:
-    TOKEN_FILE = "Settings/pat_token.dat"
-    LOGIN_FILE = "Settings/login.dat"
-    PASSWORD_FILE = "Settings/password.dat"
-    pat = decrypt_from_file(TOKEN_FILE, key_name="PAT_KEY")
-    username = decrypt_from_file(LOGIN_FILE, key_name="LOGIN_KEY")
-    password = decrypt_from_file(PASSWORD_FILE, key_name="PASSWORD_KEY")
+    reload_repo_credentials()
 except Exception as error:
     logger.error(f"Error: {str(error)}")
     logger.error("Если это первый запуск - необходимо запустить мастер настройки Auth данных 'python app/secure_save.py'")
@@ -60,6 +65,7 @@ auth_methods = ["basic", "pat"]  # 'pat', 'basic', 'Negotiate' или None
 
 
 def get_auth(auth_method):
+    reload_repo_credentials()
     if auth_method == 'pat' and pat:
         return HTTPBasicAuth("", pat)
     elif auth_method == 'basic' and username and password:
@@ -107,8 +113,9 @@ async def download_repo(repo_url, commit_id, extract_path, worker_instance=None,
         ref_type: тип ref для DevZone (branch, tag, commit) - опционально
     
     Returns:
-        (extracted_path: str, status: str)
+        (extracted_path: str, status: str, scanned_commit: str)
     """
+    reload_repo_credentials()
     extracted_path = ""
     scanned_commit = commit_id
 
@@ -630,13 +637,10 @@ async def download_devzone_repo(repo_url, ref_type, ref_value, extract_path, wor
     """
     commit_sha = None
     try:
-        # Загружаем параметры из переменных окружения
-        jenkins_job_url = os.getenv("DEVZONE_JENKINS_JOB_URL")
-        jenkins_login = os.getenv("JENKINS_LOGIN")
-        jenkins_api_token = os.getenv("JENKINS_API_TOKEN")
-        
+        jenkins_job_url, jenkins_login, jenkins_api_token = get_jenkins_credentials()
+
         if not jenkins_job_url or not jenkins_login or not jenkins_api_token:
-            error_msg = "Не заданы переменные окружения для Jenkins (DEVZONE_JENKINS_JOB_URL, JENKINS_LOGIN, JENKINS_API_TOKEN)"
+            error_msg = "Не заданы креды Jenkins (DEVZONE_JENKINS_JOB_URL, login, api_token). Обновите через POST /admin/credentials/jenkins"
             logger.error(error_msg)
             return "", error_msg, None
         

@@ -9,6 +9,8 @@ repo_cache/
 Settings/login.dat
 Settings/password.dat
 Settings/pat_token.dat
+Settings/jenkins_login.dat
+Settings/jenkins_api_token.dat
 test.py
 test_2.py
 run_copy.py
